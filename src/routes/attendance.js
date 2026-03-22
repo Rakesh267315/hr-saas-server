@@ -1,0 +1,14 @@
+const router = require('express').Router();
+const ctrl = require('../controllers/attendanceController');
+const { authenticate, authorize } = require('../middleware/auth');
+
+router.use(authenticate);
+
+router.get('/today', authorize('admin', 'hr', 'super_admin'), ctrl.getToday);
+router.post('/check-in', ctrl.checkIn);
+router.post('/check-out', ctrl.checkOut);
+router.get('/employee/:id', ctrl.getByEmployee);
+router.get('/employee/:id/summary', ctrl.getSummary);
+router.post('/mark-absent', authorize('admin', 'hr', 'super_admin'), ctrl.markAbsent);
+
+module.exports = router;
