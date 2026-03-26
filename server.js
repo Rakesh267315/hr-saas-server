@@ -8,10 +8,11 @@ const app = express();
 
 // CORS
 const allowedOrigins = [
-  process.env.CLIENT_URL || 'http://localhost:3000',
+  process.env.CLIENT_URL,
   'http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002',
   'http://127.0.0.1:3000', 'http://127.0.0.1:3001',
-];
+  'https://client-seven-omega-32.vercel.app',
+].filter(Boolean);
 app.use(cors({
   origin: (origin, cb) => {
     if (!origin || allowedOrigins.includes(origin) || /^http:\/\/localhost:\d+$/.test(origin)) {
