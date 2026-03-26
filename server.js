@@ -39,6 +39,8 @@ app.use('/api/v1/departments', require('./src/routes/departments'));
 app.use('/api/v1/attendance', require('./src/routes/attendance'));
 app.use('/api/v1/leaves', require('./src/routes/leaves'));
 app.use('/api/v1/payroll', require('./src/routes/payroll'));
+app.use('/api/v1/settings', require('./src/routes/settings'));
+app.use('/api/v1/breaks', require('./src/routes/breaks'));
 
 // Health check
 app.get('/api/health', (_, res) => res.json({ status: 'ok', timestamp: new Date() }));
