@@ -1,43 +1,44 @@
-const Attendance = require('../models/Attendance');
-const Employee = require('../models/Employee');
-const { startOfDay, endOfDay, startOfMonth, endOfMonth, format } = require('date-fns');
+const pool = require('../config/db');
+
+const fmtAtt = (r) => {
+  if (!r) return null;
+  return {
+    _id: r.id, id: r.id,
+    employee: r.employee_id
+      ? { _id: r.employee_id, id: r.employee_id, firstName: r.first_name, lastName: r.last_name, employeeCode: r.employee_code, designation: r.designation, department: r.department_id }
+      : r.employee_id,
+    date: r.date, checkIn: r.check_in, checkOut: r.check_out,
+    status: r.status, lateMinutes: r.late_minutes || 0,
+    overtimeMinutes: r.overtime_minutes || 0, workHours: parseFloat(r.work_hours) || 0,
+    notes: r.notes, createdAt: r.created_at,
+  };
+};
 
 exports.checkIn = async (req, res) => {
   try {
-    const { employeeId, notes, lat, lng } = req.body;
-    const today = new Date();
-    const dateOnly = startOfDay(today);
+    const { employeeId, notes } = req.body;
+    const empRes = await pool.query('SELECT work_start_time FROM employees WHERE id=$1', [employeeId]);
+    if (!empRes.rows[0]) return res.status(404).json({ success: false, message: 'Employee not found' });
 
-    const employee = await Employee.findById(employeeId);
-    if (!employee) return res.status(404).json({ success: false, message: 'Employee not found' });
-
-    const existing = await Attendance.findOne({ employee: employeeId, date: dateOnly });
-    if (existing?.checkIn)
+    const today = new Date().toISOString().split('T')[0];
+    const existing = await pool.query('SELECT check_in FROM attendance WHERE employee_id=$1 AND date=$2', [employeeId, today]);
+    if (existing.rows[0]?.check_in)
       return res.status(409).json({ success: false, message: 'Already checked in today' });
 
-    // Calculate late minutes
-    const [h, m] = employee.workStartTime.split(':').map(Number);
-    const scheduled = new Date(today);
-    scheduled.setHours(h, m, 0, 0);
-    const lateMinutes = Math.max(0, Math.round((today - scheduled) / 60000));
+    const now = new Date();
+    const [h, m] = empRes.rows[0].work_start_time.split(':').map(Number);
+    const scheduled = new Date(now); scheduled.setHours(h, m, 0, 0);
+    const lateMinutes = Math.max(0, Math.round((now - scheduled) / 60000));
     const status = lateMinutes > 15 ? 'late' : 'present';
 
-    const attendance = await Attendance.findOneAndUpdate(
-      { employee: employeeId, date: dateOnly },
-      {
-        employee: employeeId,
-        date: dateOnly,
-        checkIn: today,
-        status,
-        lateMinutes,
-        notes,
-        'location.checkInLat': lat,
-        'location.checkInLng': lng,
-      },
-      { upsert: true, new: true }
+    const r = await pool.query(
+      `INSERT INTO attendance (employee_id,date,check_in,status,late_minutes,notes)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (employee_id,date) DO UPDATE SET check_in=$3,status=$4,late_minutes=$5,notes=$6,updated_at=NOW()
+       RETURNING *`,
+      [employeeId, today, now, status, lateMinutes, notes||null]
     );
-
-    res.json({ success: true, data: attendance });
+    res.json({ success: true, data: fmtAtt(r.rows[0]) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -45,21 +46,24 @@ exports.checkIn = async (req, res) => {
 
 exports.checkOut = async (req, res) => {
   try {
-    const { employeeId, lat, lng } = req.body;
-    const today = startOfDay(new Date());
-
-    const attendance = await Attendance.findOne({ employee: employeeId, date: today });
-    if (!attendance || !attendance.checkIn)
+    const { employeeId } = req.body;
+    const today = new Date().toISOString().split('T')[0];
+    const att = await pool.query('SELECT * FROM attendance WHERE employee_id=$1 AND date=$2', [employeeId, today]);
+    if (!att.rows[0] || !att.rows[0].check_in)
       return res.status(400).json({ success: false, message: 'No check-in found for today' });
-    if (attendance.checkOut)
+    if (att.rows[0].check_out)
       return res.status(409).json({ success: false, message: 'Already checked out' });
 
-    attendance.checkOut = new Date();
-    attendance['location.checkOutLat'] = lat;
-    attendance['location.checkOutLng'] = lng;
-    await attendance.save();
+    const now = new Date();
+    const workHours = (now - new Date(att.rows[0].check_in)) / 3600000;
+    const overtimeMinutes = workHours > 8 ? Math.round((workHours - 8) * 60) : 0;
 
-    res.json({ success: true, data: attendance });
+    const r = await pool.query(
+      `UPDATE attendance SET check_out=$1, work_hours=$2, overtime_minutes=$3, updated_at=NOW()
+       WHERE employee_id=$4 AND date=$5 RETURNING *`,
+      [now, workHours.toFixed(2), overtimeMinutes, employeeId, today]
+    );
+    res.json({ success: true, data: fmtAtt(r.rows[0]) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -71,15 +75,14 @@ exports.getByEmployee = async (req, res) => {
     const { month, year } = req.query;
     const m = parseInt(month) || new Date().getMonth() + 1;
     const y = parseInt(year) || new Date().getFullYear();
-    const start = new Date(y, m - 1, 1);
-    const end = new Date(y, m, 0, 23, 59, 59);
+    const start = `${y}-${String(m).padStart(2,'0')}-01`;
+    const end = new Date(y, m, 0).toISOString().split('T')[0];
 
-    const records = await Attendance.find({
-      employee: id,
-      date: { $gte: start, $lte: end },
-    }).sort({ date: 1 });
-
-    res.json({ success: true, data: records });
+    const r = await pool.query(
+      `SELECT * FROM attendance WHERE employee_id=$1 AND date>=$2 AND date<=$3 ORDER BY date ASC`,
+      [id, start, end]
+    );
+    res.json({ success: true, data: r.rows.map(fmtAtt) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -91,27 +94,47 @@ exports.getSummary = async (req, res) => {
     const { month, year } = req.query;
     const m = parseInt(month) || new Date().getMonth() + 1;
     const y = parseInt(year) || new Date().getFullYear();
-    const start = new Date(y, m - 1, 1);
-    const end = new Date(y, m, 0, 23, 59, 59);
+    const start = `${y}-${String(m).padStart(2,'0')}-01`;
+    const end = new Date(y, m, 0).toISOString().split('T')[0];
 
-    const records = await Attendance.find({ employee: id, date: { $gte: start, $lte: end } });
-
-    const summary = {
-      present: 0, absent: 0, late: 0, halfDay: 0, onLeave: 0,
-      totalWorkHours: 0, totalOvertimeHours: 0, totalLateMinutes: 0,
-    };
-    records.forEach((r) => {
-      if (r.status === 'present' || r.status === 'late') summary.present++;
-      if (r.status === 'absent') summary.absent++;
-      if (r.status === 'late') summary.late++;
-      if (r.status === 'half_day') summary.halfDay++;
-      if (r.status === 'on_leave') summary.onLeave++;
-      summary.totalWorkHours += r.workHours || 0;
-      summary.totalOvertimeHours += (r.overtimeMinutes || 0) / 60;
-      summary.totalLateMinutes += r.lateMinutes || 0;
+    const r = await pool.query(
+      `SELECT status, late_minutes, work_hours, overtime_minutes FROM attendance WHERE employee_id=$1 AND date>=$2 AND date<=$3`,
+      [id, start, end]
+    );
+    const summary = { present: 0, absent: 0, late: 0, halfDay: 0, onLeave: 0, totalWorkHours: 0, totalOvertimeHours: 0, totalLateMinutes: 0 };
+    r.rows.forEach((rec) => {
+      if (['present','late'].includes(rec.status)) summary.present++;
+      if (rec.status === 'absent') summary.absent++;
+      if (rec.status === 'late') summary.late++;
+      if (rec.status === 'half_day') summary.halfDay++;
+      if (rec.status === 'on_leave') summary.onLeave++;
+      summary.totalWorkHours += parseFloat(rec.work_hours) || 0;
+      summary.totalOvertimeHours += (rec.overtime_minutes || 0) / 60;
+      summary.totalLateMinutes += rec.late_minutes || 0;
     });
-
     res.json({ success: true, data: summary });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.getToday = async (req, res) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const r = await pool.query(
+      `SELECT a.*, e.first_name, e.last_name, e.employee_code, e.designation, e.department_id
+       FROM attendance a JOIN employees e ON e.id=a.employee_id
+       WHERE a.date=$1 ORDER BY a.check_in DESC NULLS LAST`,
+      [today]
+    );
+    const records = r.rows.map(fmtAtt);
+    const stats = {
+      present: records.filter((r) => ['present','late'].includes(r.status)).length,
+      absent: records.filter((r) => r.status === 'absent').length,
+      late: records.filter((r) => r.status === 'late').length,
+      onLeave: records.filter((r) => r.status === 'on_leave').length,
+    };
+    res.json({ success: true, data: records, stats });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -120,48 +143,15 @@ exports.getSummary = async (req, res) => {
 exports.markAbsent = async (req, res) => {
   try {
     const { date } = req.body;
-    const targetDate = startOfDay(new Date(date));
-
-    // Find all active employees who haven't checked in
-    const employees = await Employee.find({ status: 'active' });
-    const present = await Attendance.distinct('employee', {
-      date: targetDate,
-      status: { $in: ['present', 'late', 'on_leave', 'half_day'] },
-    });
-
-    const presentSet = new Set(present.map(String));
-    const absentees = employees.filter((e) => !presentSet.has(String(e._id)));
-
-    const ops = absentees.map((e) => ({
-      updateOne: {
-        filter: { employee: e._id, date: targetDate },
-        update: { employee: e._id, date: targetDate, status: 'absent' },
-        upsert: true,
-      },
-    }));
-
-    if (ops.length) await Attendance.bulkWrite(ops);
-    res.json({ success: true, message: `Marked ${ops.length} employees absent` });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
-
-exports.getToday = async (req, res) => {
-  try {
-    const today = startOfDay(new Date());
-    const records = await Attendance.find({ date: today })
-      .populate('employee', 'firstName lastName employeeCode department designation')
-      .sort({ checkIn: -1 });
-
-    const stats = {
-      present: records.filter((r) => ['present', 'late'].includes(r.status)).length,
-      absent: records.filter((r) => r.status === 'absent').length,
-      late: records.filter((r) => r.status === 'late').length,
-      onLeave: records.filter((r) => r.status === 'on_leave').length,
-    };
-
-    res.json({ success: true, data: records, stats });
+    const targetDate = date || new Date().toISOString().split('T')[0];
+    const r = await pool.query(
+      `INSERT INTO attendance (employee_id, date, status)
+       SELECT id, $1, 'absent' FROM employees WHERE status='active'
+       AND id NOT IN (SELECT employee_id FROM attendance WHERE date=$1 AND status IN ('present','late','on_leave','half_day'))
+       ON CONFLICT (employee_id, date) DO NOTHING`,
+      [targetDate]
+    );
+    res.json({ success: true, message: `Marked ${r.rowCount} employees absent` });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

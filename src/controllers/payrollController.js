@@ -1,6 +1,4 @@
-const Payroll = require('../models/Payroll');
-const Employee = require('../models/Employee');
-const Attendance = require('../models/Attendance');
+const pool = require('../config/db');
 
 const getWorkingDays = (year, month) => {
   let count = 0;
@@ -12,50 +10,71 @@ const getWorkingDays = (year, month) => {
   return count;
 };
 
-const computePayroll = async (employeeId, month, year) => {
-  const employee = await Employee.findById(employeeId);
-  if (!employee) throw new Error('Employee not found');
+const fmtPayroll = (p) => {
+  if (!p) return null;
+  return {
+    _id: p.id, id: p.id,
+    employee: p.employee_id ? { _id: p.employee_id, id: p.employee_id, firstName: p.first_name, lastName: p.last_name, employeeCode: p.employee_code, designation: p.designation } : p.employee_id,
+    month: p.month, year: p.year, period: p.period,
+    baseSalary: parseFloat(p.base_salary)||0, overtimePay: parseFloat(p.overtime_pay)||0,
+    bonus: parseFloat(p.bonus)||0,
+    allowances: { hra: parseFloat(p.allowance_hra)||0, transport: parseFloat(p.allowance_transport)||0, medical: parseFloat(p.allowance_medical)||0, other: parseFloat(p.allowance_other)||0 },
+    grossSalary: parseFloat(p.gross_salary)||0,
+    deductions: { tax: parseFloat(p.tax)||0, providentFund: parseFloat(p.provident_fund)||0, insurance: parseFloat(p.insurance)||0, lateDeduction: parseFloat(p.late_deduction)||0, loanRepayment: parseFloat(p.loan_repayment)||0, other: parseFloat(p.deduction_other)||0 },
+    totalDeductions: parseFloat(p.total_deductions)||0, netSalary: parseFloat(p.net_salary)||0,
+    workingDays: p.working_days, presentDays: p.present_days, absentDays: p.absent_days,
+    leaveDays: p.leave_days, overtimeHours: parseFloat(p.overtime_hours)||0, lateMinutes: p.late_minutes||0,
+    status: p.status, paymentDate: p.payment_date, paymentMethod: p.payment_method, notes: p.notes,
+    createdAt: p.created_at,
+  };
+};
 
-  const start = new Date(year, month - 1, 1);
-  const end = new Date(year, month, 0, 23, 59, 59);
-  const records = await Attendance.find({ employee: employeeId, date: { $gte: start, $lte: end } });
+const paySelect = `p.*, e.first_name, e.last_name, e.employee_code, e.designation FROM payroll p LEFT JOIN employees e ON e.id=p.employee_id`;
+
+const computePayroll = async (employeeId, month, year) => {
+  const empRes = await pool.query('SELECT * FROM employees WHERE id=$1', [employeeId]);
+  const emp = empRes.rows[0];
+  if (!emp) throw new Error('Employee not found');
+
+  const start = `${year}-${String(month).padStart(2,'0')}-01`;
+  const end = new Date(year, month, 0).toISOString().split('T')[0];
+  const attRes = await pool.query(
+    `SELECT status, late_minutes, overtime_minutes FROM attendance WHERE employee_id=$1 AND date>=$2 AND date<=$3`,
+    [employeeId, start, end]
+  );
+  const records = attRes.rows;
 
   const workingDays = getWorkingDays(year, month);
-  const presentDays = records.filter((r) => ['present', 'late'].includes(r.status)).length;
+  const presentDays = records.filter((r) => ['present','late'].includes(r.status)).length;
   const halfDays = records.filter((r) => r.status === 'half_day').length;
   const absentDays = records.filter((r) => r.status === 'absent').length;
   const leaveDays = records.filter((r) => r.status === 'on_leave').length;
-  const totalLateMinutes = records.reduce((s, r) => s + (r.lateMinutes || 0), 0);
-  const overtimeMinutes = records.reduce((s, r) => s + (r.overtimeMinutes || 0), 0);
+  const totalLateMinutes = records.reduce((s, r) => s + (r.late_minutes||0), 0);
+  const overtimeMinutes = records.reduce((s, r) => s + (r.overtime_minutes||0), 0);
 
   const effectiveDays = presentDays + halfDays * 0.5 + leaveDays;
-  const perDaySalary = employee.baseSalary / workingDays;
+  const perDaySalary = parseFloat(emp.base_salary) / (workingDays || 1);
   const basePay = perDaySalary * effectiveDays;
-
-  const lateDeduction = (totalLateMinutes / 60) * (employee.hourlyRate || employee.baseSalary / (workingDays * 8));
-  const overtimePay = (overtimeMinutes / 60) * (employee.hourlyRate || 0) * 1.5;
-
+  const hourlyRate = parseFloat(emp.hourly_rate) || (parseFloat(emp.base_salary) / (workingDays * 8));
+  const lateDeduction = (totalLateMinutes / 60) * hourlyRate;
+  const overtimePay = (overtimeMinutes / 60) * hourlyRate * 1.5;
+  const hraAllowance = parseFloat(emp.base_salary) * 0.1;
+  const grossSalary = basePay + overtimePay + hraAllowance + 1500 + 1000;
   const providentFund = basePay * 0.12;
   const tax = basePay > 50000 ? basePay * 0.1 : 0;
+  const totalDeductions = providentFund + tax + lateDeduction;
+  const netSalary = grossSalary - totalDeductions;
+  const period = `${year}-${String(month).padStart(2,'0')}`;
 
   return {
-    employee: employeeId,
-    month, year,
-    baseSalary: Math.round(basePay),
-    overtimePay: Math.round(overtimePay),
-    workingDays, presentDays, absentDays, leaveDays,
-    overtimeHours: Math.round(overtimeMinutes / 60 * 100) / 100,
-    lateMinutes: totalLateMinutes,
-    allowances: {
-      hra: Math.round(employee.baseSalary * 0.1),
-      transport: 1500,
-      medical: 1000,
-    },
-    deductions: {
-      providentFund: Math.round(providentFund),
-      tax: Math.round(tax),
-      lateDeduction: Math.round(lateDeduction),
-    },
+    employee_id: employeeId, month, year, period,
+    base_salary: Math.round(basePay), overtime_pay: Math.round(overtimePay),
+    allowance_hra: Math.round(hraAllowance), allowance_transport: 1500, allowance_medical: 1000,
+    gross_salary: Math.round(grossSalary), tax: Math.round(tax),
+    provident_fund: Math.round(providentFund), late_deduction: Math.round(lateDeduction),
+    total_deductions: Math.round(totalDeductions), net_salary: Math.round(netSalary),
+    working_days: workingDays, present_days: presentDays, absent_days: absentDays,
+    leave_days: leaveDays, overtime_hours: Math.round(overtimeMinutes/60*100)/100, late_minutes: totalLateMinutes,
   };
 };
 
@@ -77,25 +96,33 @@ exports.generate = async (req, res) => {
     const m = parseInt(month) || new Date().getMonth() + 1;
     const y = parseInt(year) || new Date().getFullYear();
 
-    const targets = employeeIds?.length
-      ? employeeIds
-      : (await Employee.find({ status: 'active' }).select('_id')).map((e) => e._id);
+    let targets = employeeIds?.length ? employeeIds : [];
+    if (!targets.length) {
+      const r = await pool.query(`SELECT id FROM employees WHERE status='active'`);
+      targets = r.rows.map((e) => e.id);
+    }
 
     const results = [];
     for (const empId of targets) {
       try {
         const data = await computePayroll(empId, m, y);
-        const payroll = await Payroll.findOneAndUpdate(
-          { employee: empId, month: m, year: y },
-          { ...data, generatedBy: req.user._id, status: 'draft' },
-          { upsert: true, new: true }
+        const keys = Object.keys(data);
+        const vals = Object.values(data);
+        const setClauses = keys.map((k, i) => `${k}=$${i+1}`).join(',');
+        const cols = keys.join(',');
+        const placeholders = keys.map((_, i) => `$${i+1}`).join(',');
+        vals.push(req.user.id);
+        const r = await pool.query(
+          `INSERT INTO payroll (${cols},generated_by,status) VALUES (${placeholders},$${vals.length},'draft')
+           ON CONFLICT (employee_id,month,year) DO UPDATE SET ${setClauses},generated_by=$${vals.length},updated_at=NOW()
+           RETURNING *`,
+          vals
         );
-        results.push(payroll);
+        results.push(fmtPayroll(r.rows[0]));
       } catch (e) {
         results.push({ employeeId: empId, error: e.message });
       }
     }
-
     res.status(201).json({ success: true, data: results, count: results.length });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -105,27 +132,20 @@ exports.generate = async (req, res) => {
 exports.getAll = async (req, res) => {
   try {
     const { month, year, status, employeeId, page = 1, limit = 20 } = req.query;
-    const filter = {};
-    if (month) filter.month = +month;
-    if (year) filter.year = +year;
-    if (status) filter.status = status;
-    if (employeeId) filter.employee = employeeId;
+    const conditions = []; const params = [];
+    if (month) { params.push(+month); conditions.push(`p.month=$${params.length}`); }
+    if (year) { params.push(+year); conditions.push(`p.year=$${params.length}`); }
+    if (status) { params.push(status); conditions.push(`p.status=$${params.length}`); }
+    if (employeeId) { params.push(employeeId); conditions.push(`p.employee_id=$${params.length}`); }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const offset = (page - 1) * limit;
 
-    const skip = (page - 1) * limit;
-    const [payrolls, total] = await Promise.all([
-      Payroll.find(filter)
-        .populate('employee', 'firstName lastName employeeCode designation department')
-        .skip(skip)
-        .limit(+limit)
-        .sort({ year: -1, month: -1 }),
-      Payroll.countDocuments(filter),
+    const [rows, countRow] = await Promise.all([
+      pool.query(`SELECT ${paySelect} ${where} ORDER BY p.year DESC, p.month DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`, [...params, limit, offset]),
+      pool.query(`SELECT COUNT(*) FROM payroll p ${where}`, params),
     ]);
-
-    res.json({
-      success: true,
-      data: payrolls,
-      pagination: { total, page: +page, limit: +limit, pages: Math.ceil(total / limit) },
-    });
+    const total = parseInt(countRow.rows[0].count);
+    res.json({ success: true, data: rows.rows.map(fmtPayroll), pagination: { total, page: +page, limit: +limit, pages: Math.ceil(total/limit) } });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -133,12 +153,9 @@ exports.getAll = async (req, res) => {
 
 exports.getOne = async (req, res) => {
   try {
-    const payroll = await Payroll.findById(req.params.id)
-      .populate('employee', 'firstName lastName employeeCode designation department bankAccount')
-      .populate('generatedBy', 'name')
-      .populate('approvedBy', 'name');
-    if (!payroll) return res.status(404).json({ success: false, message: 'Payroll not found' });
-    res.json({ success: true, data: payroll });
+    const r = await pool.query(`SELECT ${paySelect} WHERE p.id=$1`, [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ success: false, message: 'Payroll not found' });
+    res.json({ success: true, data: fmtPayroll(r.rows[0]) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -147,13 +164,12 @@ exports.getOne = async (req, res) => {
 exports.updateStatus = async (req, res) => {
   try {
     const { status, paymentDate, paymentMethod, notes } = req.body;
-    const payroll = await Payroll.findByIdAndUpdate(
-      req.params.id,
-      { status, paymentDate, paymentMethod, notes, approvedBy: req.user._id },
-      { new: true }
+    const r = await pool.query(
+      `UPDATE payroll SET status=$1,payment_date=$2,payment_method=$3,notes=$4,approved_by=$5,updated_at=NOW() WHERE id=$6 RETURNING *`,
+      [status, paymentDate||null, paymentMethod||null, notes||null, req.user.id, req.params.id]
     );
-    if (!payroll) return res.status(404).json({ success: false, message: 'Payroll not found' });
-    res.json({ success: true, data: payroll });
+    if (!r.rows[0]) return res.status(404).json({ success: false, message: 'Payroll not found' });
+    res.json({ success: true, data: fmtPayroll(r.rows[0]) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -162,24 +178,16 @@ exports.updateStatus = async (req, res) => {
 exports.getSummary = async (req, res) => {
   try {
     const { month, year } = req.query;
-    const filter = {};
-    if (month) filter.month = +month;
-    if (year) filter.year = +year;
-
-    const agg = await Payroll.aggregate([
-      { $match: filter },
-      {
-        $group: {
-          _id: null,
-          totalGross: { $sum: '$grossSalary' },
-          totalNet: { $sum: '$netSalary' },
-          totalDeductions: { $sum: '$totalDeductions' },
-          count: { $sum: 1 },
-        },
-      },
-    ]);
-
-    res.json({ success: true, data: agg[0] || {} });
+    const conditions = []; const params = [];
+    if (month) { params.push(+month); conditions.push(`month=$${params.length}`); }
+    if (year) { params.push(+year); conditions.push(`year=$${params.length}`); }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const r = await pool.query(
+      `SELECT SUM(gross_salary) AS "totalGross", SUM(net_salary) AS "totalNet", SUM(total_deductions) AS "totalDeductions", COUNT(*) AS count FROM payroll ${where}`,
+      params
+    );
+    const row = r.rows[0];
+    res.json({ success: true, data: { totalGross: parseFloat(row.totalGross)||0, totalNet: parseFloat(row.totalNet)||0, totalDeductions: parseFloat(row.totalDeductions)||0, count: parseInt(row.count)||0 } });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

@@ -2,25 +2,18 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
-const connectDB = require('./src/config/db');
+const initDB = require('./src/config/initDB');
 
 const app = express();
 
-// Connect MongoDB
-connectDB();
-
-// Middleware — allow any localhost origin (dev) plus configured CLIENT_URL
+// CORS
 const allowedOrigins = [
   process.env.CLIENT_URL || 'http://localhost:3000',
-  'http://localhost:3000',
-  'http://localhost:3001',
-  'http://localhost:3002',
-  'http://127.0.0.1:3000',
-  'http://127.0.0.1:3001',
+  'http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002',
+  'http://127.0.0.1:3000', 'http://127.0.0.1:3001',
 ];
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow requests with no origin (mobile apps, curl, Postman) or matching origins
     if (!origin || allowedOrigins.includes(origin) || /^http:\/\/localhost:\d+$/.test(origin)) {
       cb(null, true);
     } else {
@@ -43,7 +36,7 @@ app.use('/api/v1/settings', require('./src/routes/settings'));
 app.use('/api/v1/breaks', require('./src/routes/breaks'));
 
 // Health check
-app.get('/api/health', (_, res) => res.json({ status: 'ok', timestamp: new Date() }));
+app.get('/api/health', (_, res) => res.json({ status: 'ok', db: 'supabase', timestamp: new Date() }));
 
 // 404
 app.use((req, res) => res.status(404).json({ success: false, message: 'Route not found' }));
@@ -55,4 +48,11 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+app.listen(PORT, async () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+  try {
+    await initDB();
+  } catch (err) {
+    console.error('Schema init error:', err.message);
+  }
+});

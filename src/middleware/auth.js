@@ -1,17 +1,17 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const pool = require('../config/db');
 
 const authenticate = async (req, res, next) => {
   const token = req.headers.authorization?.startsWith('Bearer ')
     ? req.headers.authorization.split(' ')[1]
     : null;
-
   if (!token) return res.status(401).json({ success: false, message: 'No token provided' });
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = await User.findById(decoded.id).select('-password');
-    if (!req.user || !req.user.isActive)
+    const r = await pool.query('SELECT * FROM users WHERE id=$1', [decoded.id]);
+    req.user = r.rows[0];
+    if (!req.user || !req.user.is_active)
       return res.status(401).json({ success: false, message: 'User not found or inactive' });
     next();
   } catch {

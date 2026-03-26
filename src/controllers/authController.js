@@ -1,19 +1,37 @@
+const pool = require('../config/db');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
-const Employee = require('../models/Employee');
 
 const signToken = (id) =>
   jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
 
+const fmtEmp = (e) => {
+  if (!e) return null;
+  return {
+    _id: e.id, id: e.id,
+    employeeCode: e.employee_code,
+    firstName: e.first_name, lastName: e.last_name,
+    fullName: `${e.first_name} ${e.last_name || ''}`.trim(),
+    designation: e.designation,
+    department: e.department_id ? { _id: e.department_id, id: e.department_id, name: e.department_name } : null,
+    avatar: e.avatar,
+  };
+};
+
 exports.register = async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
-    if (await User.findOne({ email }))
+    const exists = await pool.query('SELECT id FROM users WHERE email=$1', [email]);
+    if (exists.rows.length)
       return res.status(409).json({ success: false, message: 'Email already registered' });
 
-    const user = await User.create({ name, email, password, role: role || 'employee' });
-    const token = signToken(user._id);
-    res.status(201).json({ success: true, token, data: { user: { ...user.toObject(), password: undefined } } });
+    const hashed = await bcrypt.hash(password, 12);
+    const r = await pool.query(
+      `INSERT INTO users (name,email,password,role) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [name, email, hashed, role || 'employee']
+    );
+    const user = r.rows[0]; delete user.password;
+    res.status(201).json({ success: true, token: signToken(user.id), data: { user: { ...user, _id: user.id } } });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -22,36 +40,32 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    const user = await User.findOne({ email }).select('+password');
-    if (!user || !(await user.comparePassword(password)))
+    const r = await pool.query('SELECT * FROM users WHERE email=$1', [email]);
+    const user = r.rows[0];
+    if (!user || !(await bcrypt.compare(password, user.password)))
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
-
-    if (!user.isActive)
+    if (!user.is_active)
       return res.status(403).json({ success: false, message: 'Account deactivated' });
 
-    user.lastLogin = new Date();
-    await user.save({ validateBeforeSave: false });
+    await pool.query('UPDATE users SET last_login=NOW() WHERE id=$1', [user.id]);
 
-    let employeeData = null;
-    if (user.employeeId) {
-      employeeData = await Employee.findById(user.employeeId)
-        .select('firstName lastName employeeCode designation department avatar')
-        .populate('department', 'name');
+    let employee = null;
+    if (user.employee_id) {
+      const er = await pool.query(
+        `SELECT e.*, d.name AS department_name FROM employees e
+         LEFT JOIN departments d ON d.id=e.department_id WHERE e.id=$1`,
+        [user.employee_id]
+      );
+      employee = fmtEmp(er.rows[0]);
     }
 
-    const token = signToken(user._id);
+    delete user.password;
     res.json({
       success: true,
-      token,
+      token: signToken(user.id),
       data: {
-        user: {
-          id: user._id,
-          name: user.name,
-          email: user.email,
-          role: user.role,
-          avatar: user.avatar,
-        },
-        employee: employeeData,
+        user: { _id: user.id, id: user.id, name: user.name, email: user.email, role: user.role, avatar: user.avatar },
+        employee,
       },
     });
   } catch (err) {
@@ -61,12 +75,18 @@ exports.login = async (req, res) => {
 
 exports.getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
+    const r = await pool.query('SELECT * FROM users WHERE id=$1', [req.user.id]);
+    const user = r.rows[0]; delete user.password;
     let employee = null;
-    if (user.employeeId) {
-      employee = await Employee.findById(user.employeeId).populate('department', 'name');
+    if (user.employee_id) {
+      const er = await pool.query(
+        `SELECT e.*, d.name AS department_name FROM employees e
+         LEFT JOIN departments d ON d.id=e.department_id WHERE e.id=$1`,
+        [user.employee_id]
+      );
+      employee = fmtEmp(er.rows[0]);
     }
-    res.json({ success: true, data: { user, employee } });
+    res.json({ success: true, data: { user: { ...user, _id: user.id }, employee } });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -75,12 +95,11 @@ exports.getMe = async (req, res) => {
 exports.changePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    const user = await User.findById(req.user._id).select('+password');
-    if (!(await user.comparePassword(currentPassword)))
+    const r = await pool.query('SELECT password FROM users WHERE id=$1', [req.user.id]);
+    if (!(await bcrypt.compare(currentPassword, r.rows[0].password)))
       return res.status(401).json({ success: false, message: 'Current password incorrect' });
-
-    user.password = newPassword;
-    await user.save();
+    const hashed = await bcrypt.hash(newPassword, 12);
+    await pool.query('UPDATE users SET password=$1,updated_at=NOW() WHERE id=$2', [hashed, req.user.id]);
     res.json({ success: true, message: 'Password changed successfully' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
