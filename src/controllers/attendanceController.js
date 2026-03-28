@@ -6,8 +6,8 @@ const fmtAtt = (r) => {
   return {
     _id: r.id, id: r.id,
     employee: r.employee_id
-      ? { _id: r.employee_id, id: r.employee_id, firstName: r.first_name, lastName: r.last_name, employeeCode: r.employee_code, designation: r.designation, department: r.department_id }
-      : r.employee_id,
+      ? { _id: r.employee_id, id: r.employee_id, firstName: r.first_name, lastName: r.last_name, employeeCode: r.employee_code, designation: r.designation, department: r.department_id ? { _id: r.department_id, name: r.department_name } : null }
+      : null,
     date: r.date, checkIn: r.check_in, checkOut: r.check_out,
     status: r.status, lateMinutes: r.late_minutes || 0,
     overtimeMinutes: r.overtime_minutes || 0, workHours: parseFloat(r.work_hours) || 0,
@@ -140,8 +140,11 @@ exports.getToday = async (req, res) => {
   try {
     const today = new Date().toISOString().split('T')[0];
     const r = await pool.query(
-      `SELECT a.*, e.first_name, e.last_name, e.employee_code, e.designation, e.department_id
-       FROM attendance a JOIN employees e ON e.id=a.employee_id
+      `SELECT a.*, e.first_name, e.last_name, e.employee_code, e.designation, e.department_id,
+              d.name AS department_name
+       FROM attendance a
+       JOIN employees e ON e.id = a.employee_id
+       LEFT JOIN departments d ON d.id = e.department_id
        WHERE a.date=$1 ORDER BY a.check_in DESC NULLS LAST`,
       [today]
     );
