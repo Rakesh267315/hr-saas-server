@@ -20,8 +20,9 @@ const fmtEmp = (e) => {
 
 exports.register = async (req, res) => {
   try {
-    const { name, email, password, role } = req.body;
-    const exists = await pool.query('SELECT id FROM users WHERE email=$1', [email]);
+    const { name, password, role } = req.body;
+    const email = req.body.email?.trim().toLowerCase();
+    const exists = await pool.query('SELECT id FROM users WHERE LOWER(email)=$1', [email]);
     if (exists.rows.length)
       return res.status(409).json({ success: false, message: 'Email already registered' });
 
@@ -40,7 +41,8 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    const r = await pool.query('SELECT * FROM users WHERE email=$1', [email]);
+    // LOWER() makes login case-insensitive — Rakesh@... == rakesh@... == RAKESH@...
+    const r = await pool.query('SELECT * FROM users WHERE LOWER(email)=LOWER($1)', [email?.trim()]);
     const user = r.rows[0];
     if (!user || !(await bcrypt.compare(password, user.password)))
       return res.status(401).json({ success: false, message: 'Invalid credentials' });

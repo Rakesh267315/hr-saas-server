@@ -171,7 +171,8 @@ exports.remove = async (req, res) => {
 exports.updateCredentials = async (req, res) => {
   const client = await pool.connect();
   try {
-    const { email, password } = req.body;
+    const { password } = req.body;
+    const email = req.body.email?.trim().toLowerCase() || null;
     if (!email && !password)
       return res.status(400).json({ success: false, message: 'Provide at least email or password to update' });
 
@@ -186,7 +187,7 @@ exports.updateCredentials = async (req, res) => {
 
     if (!emp.user_id) {
       // No login account yet — create one now
-      const finalEmail = email || emp.email;
+      const finalEmail = email || (emp.email?.trim().toLowerCase());
       const finalPwd = password || 'Hr@123456';
       const hashed = await bcrypt.hash(finalPwd, 12);
       const fullName = `${emp.first_name} ${emp.last_name || ''}`.trim();
