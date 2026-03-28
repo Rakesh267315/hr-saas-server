@@ -145,9 +145,47 @@ const initDB = async () => {
       office_end_time VARCHAR(10) DEFAULT '19:00',
       weekly_off_day VARCHAR(20) DEFAULT 'Sunday',
       timezone VARCHAR(50) DEFAULT 'Asia/Kolkata',
+      -- Attendance Rules
+      grace_period_minutes INTEGER DEFAULT 15,
+      half_day_after_minutes INTEGER DEFAULT 240,
+      absent_after_minutes INTEGER DEFAULT 480,
+      -- Salary / Late Penalty
+      late_count_for_half_day INTEGER DEFAULT 3,
+      overtime_multiplier NUMERIC DEFAULT 1.5,
+      hra_percent NUMERIC DEFAULT 10,
+      transport_allowance NUMERIC DEFAULT 1500,
+      medical_allowance NUMERIC DEFAULT 1000,
+      pf_percent NUMERIC DEFAULT 12,
+      tax_percent NUMERIC DEFAULT 10,
+      tax_threshold NUMERIC DEFAULT 50000,
+      -- Leave Policy
+      monthly_leave_limit INTEGER DEFAULT 2,
+      sick_leave_limit INTEGER DEFAULT 1,
+      leave_is_paid BOOLEAN DEFAULT true,
+      leave_approval_required BOOLEAN DEFAULT true,
+      -- Company Policies text
+      company_policies TEXT DEFAULT '',
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
+
+    -- Add new columns to existing company_settings table (safe migration)
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS grace_period_minutes INTEGER DEFAULT 15;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS half_day_after_minutes INTEGER DEFAULT 240;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS absent_after_minutes INTEGER DEFAULT 480;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS late_count_for_half_day INTEGER DEFAULT 3;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS overtime_multiplier NUMERIC DEFAULT 1.5;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS hra_percent NUMERIC DEFAULT 10;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS transport_allowance NUMERIC DEFAULT 1500;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS medical_allowance NUMERIC DEFAULT 1000;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS pf_percent NUMERIC DEFAULT 12;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS tax_percent NUMERIC DEFAULT 10;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS tax_threshold NUMERIC DEFAULT 50000;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS monthly_leave_limit INTEGER DEFAULT 2;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS sick_leave_limit INTEGER DEFAULT 1;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS leave_is_paid BOOLEAN DEFAULT true;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS leave_approval_required BOOLEAN DEFAULT true;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS company_policies TEXT DEFAULT '';
 
     CREATE TABLE IF NOT EXISTS breaks (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

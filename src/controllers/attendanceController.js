@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { getSettings } = require('./settingsController');
 
 const fmtAtt = (r) => {
   if (!r) return null;
@@ -14,6 +15,18 @@ const fmtAtt = (r) => {
   };
 };
 
+// Determine attendance status from late minutes using company settings
+const resolveStatus = (lateMinutes, settings) => {
+  const grace = settings.grace_period_minutes ?? 15;
+  const halfDayAt = settings.half_day_after_minutes ?? 240;
+  const absentAt = settings.absent_after_minutes ?? 480;
+
+  if (lateMinutes <= grace) return 'present';
+  if (lateMinutes <= halfDayAt) return 'late';
+  if (lateMinutes <= absentAt) return 'half_day';
+  return 'absent';
+};
+
 exports.checkIn = async (req, res) => {
   try {
     const { employeeId, notes } = req.body;
@@ -25,18 +38,19 @@ exports.checkIn = async (req, res) => {
     if (existing.rows[0]?.check_in)
       return res.status(409).json({ success: false, message: 'Already checked in today' });
 
+    const settings = await getSettings();
     const now = new Date();
     const [h, m] = empRes.rows[0].work_start_time.split(':').map(Number);
     const scheduled = new Date(now); scheduled.setHours(h, m, 0, 0);
     const lateMinutes = Math.max(0, Math.round((now - scheduled) / 60000));
-    const status = lateMinutes > 15 ? 'late' : 'present';
+    const status = resolveStatus(lateMinutes, settings);
 
     const r = await pool.query(
       `INSERT INTO attendance (employee_id,date,check_in,status,late_minutes,notes)
        VALUES ($1,$2,$3,$4,$5,$6)
        ON CONFLICT (employee_id,date) DO UPDATE SET check_in=$3,status=$4,late_minutes=$5,notes=$6,updated_at=NOW()
        RETURNING *`,
-      [employeeId, today, now, status, lateMinutes, notes||null]
+      [employeeId, today, now, status, lateMinutes, notes || null]
     );
     res.json({ success: true, data: fmtAtt(r.rows[0]) });
   } catch (err) {
@@ -54,9 +68,13 @@ exports.checkOut = async (req, res) => {
     if (att.rows[0].check_out)
       return res.status(409).json({ success: false, message: 'Already checked out' });
 
+    const settings = await getSettings();
+    const workHoursPerDay = 8; // standard full day
     const now = new Date();
     const workHours = (now - new Date(att.rows[0].check_in)) / 3600000;
-    const overtimeMinutes = workHours > 8 ? Math.round((workHours - 8) * 60) : 0;
+    const overtimeMinutes = workHours > workHoursPerDay
+      ? Math.round((workHours - workHoursPerDay) * 60)
+      : 0;
 
     const r = await pool.query(
       `UPDATE attendance SET check_out=$1, work_hours=$2, overtime_minutes=$3, updated_at=NOW()
@@ -75,7 +93,7 @@ exports.getByEmployee = async (req, res) => {
     const { month, year } = req.query;
     const m = parseInt(month) || new Date().getMonth() + 1;
     const y = parseInt(year) || new Date().getFullYear();
-    const start = `${y}-${String(m).padStart(2,'0')}-01`;
+    const start = `${y}-${String(m).padStart(2, '0')}-01`;
     const end = new Date(y, m, 0).toISOString().split('T')[0];
 
     const r = await pool.query(
@@ -94,7 +112,7 @@ exports.getSummary = async (req, res) => {
     const { month, year } = req.query;
     const m = parseInt(month) || new Date().getMonth() + 1;
     const y = parseInt(year) || new Date().getFullYear();
-    const start = `${y}-${String(m).padStart(2,'0')}-01`;
+    const start = `${y}-${String(m).padStart(2, '0')}-01`;
     const end = new Date(y, m, 0).toISOString().split('T')[0];
 
     const r = await pool.query(
@@ -103,7 +121,7 @@ exports.getSummary = async (req, res) => {
     );
     const summary = { present: 0, absent: 0, late: 0, halfDay: 0, onLeave: 0, totalWorkHours: 0, totalOvertimeHours: 0, totalLateMinutes: 0 };
     r.rows.forEach((rec) => {
-      if (['present','late'].includes(rec.status)) summary.present++;
+      if (['present', 'late'].includes(rec.status)) summary.present++;
       if (rec.status === 'absent') summary.absent++;
       if (rec.status === 'late') summary.late++;
       if (rec.status === 'half_day') summary.halfDay++;
@@ -129,7 +147,7 @@ exports.getToday = async (req, res) => {
     );
     const records = r.rows.map(fmtAtt);
     const stats = {
-      present: records.filter((r) => ['present','late'].includes(r.status)).length,
+      present: records.filter((r) => ['present', 'late'].includes(r.status)).length,
       absent: records.filter((r) => r.status === 'absent').length,
       late: records.filter((r) => r.status === 'late').length,
       onLeave: records.filter((r) => r.status === 'on_leave').length,
