@@ -168,6 +168,46 @@ exports.remove = async (req, res) => {
   }
 };
 
+exports.updateCredentials = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { email, password } = req.body;
+    if (!email && !password)
+      return res.status(400).json({ success: false, message: 'Provide at least email or password to update' });
+
+    const empRes = await pool.query('SELECT id, user_id, email FROM employees WHERE id=$1', [req.params.id]);
+    if (!empRes.rows[0]) return res.status(404).json({ success: false, message: 'Employee not found' });
+    const emp = empRes.rows[0];
+    if (!emp.user_id)
+      return res.status(400).json({ success: false, message: 'This employee has no login account. Create one first.' });
+
+    await client.query('BEGIN');
+    if (email) {
+      await client.query('UPDATE users SET email=$1, updated_at=NOW() WHERE id=$2', [email, emp.user_id]);
+      await client.query('UPDATE employees SET email=$1, updated_at=NOW() WHERE id=$2', [email, emp.id]);
+    }
+    if (password) {
+      const hashed = await bcrypt.hash(password, 12);
+      await client.query('UPDATE users SET password=$1, updated_at=NOW() WHERE id=$2', [hashed, emp.user_id]);
+    }
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      message: 'Credentials updated successfully',
+      changedBy: req.user?.name || 'Admin',
+      changedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505')
+      return res.status(409).json({ success: false, message: 'This email is already used by another account' });
+    res.status(500).json({ success: false, message: err.message });
+  } finally {
+    client.release();
+  }
+};
+
 exports.getStats = async (req, res) => {
   try {
     const [total, active, onLeave, byDept] = await Promise.all([
