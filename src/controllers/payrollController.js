@@ -112,15 +112,22 @@ const computePayroll = async (employeeId, month, year) => {
   };
 };
 
+const validatePeriod = (m, y) => {
+  if (m < 1 || m > 12) throw new Error('Month must be between 1 and 12');
+  if (y < 2000 || y > 2100) throw new Error('Year must be between 2000 and 2100');
+};
+
 exports.preview = async (req, res) => {
   try {
     const { employeeId, month, year } = req.query;
+    if (!employeeId) return res.status(400).json({ success: false, message: 'employeeId is required' });
     const m = parseInt(month) || new Date().getMonth() + 1;
     const y = parseInt(year) || new Date().getFullYear();
+    try { validatePeriod(m, y); } catch (e) { return res.status(400).json({ success: false, message: e.message }); }
     const data = await computePayroll(employeeId, m, y);
     res.json({ success: true, data });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    res.status(err.message === 'Employee not found' ? 404 : 500).json({ success: false, message: err.message });
   }
 };
 
@@ -129,6 +136,7 @@ exports.generate = async (req, res) => {
     const { employeeIds, month, year } = req.body;
     const m = parseInt(month) || new Date().getMonth() + 1;
     const y = parseInt(year) || new Date().getFullYear();
+    try { validatePeriod(m, y); } catch (e) { return res.status(400).json({ success: false, message: e.message }); }
 
     let targets = employeeIds?.length ? employeeIds : [];
     if (!targets.length) {

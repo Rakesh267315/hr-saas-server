@@ -6,23 +6,38 @@ const validate = require('../middleware/validate');
 
 router.post('/register',
   [
-    body('name').notEmpty(),
-    body('email').isEmail(),
-    body('password').isLength({ min: 6 }),
+    body('name').trim().notEmpty().withMessage('Name is required'),
+    body('email').isEmail().normalizeEmail().withMessage('Valid email required'),
+    body('password')
+      .isLength({ min: 8 }).withMessage('Password must be at least 8 characters')
+      .matches(/[A-Z]/).withMessage('Password must contain at least one uppercase letter')
+      .matches(/[0-9]/).withMessage('Password must contain at least one number'),
+    body('role').optional().isIn(['admin', 'hr', 'employee']).withMessage('Invalid role'),
   ],
   validate,
   ctrl.register
 );
 
 router.post('/login',
-  [body('email').isEmail(), body('password').notEmpty()],
+  [
+    body('email').isEmail().normalizeEmail().withMessage('Valid email required'),
+    body('password').notEmpty().withMessage('Password is required'),
+  ],
   validate,
   ctrl.login
 );
 
 router.get('/me', authenticate, ctrl.getMe);
-router.patch('/change-password', authenticate,
-  [body('currentPassword').notEmpty(), body('newPassword').isLength({ min: 6 })],
+
+router.patch('/change-password',
+  authenticate,
+  [
+    body('currentPassword').notEmpty().withMessage('Current password is required'),
+    body('newPassword')
+      .isLength({ min: 8 }).withMessage('New password must be at least 8 characters')
+      .matches(/[A-Z]/).withMessage('Must contain at least one uppercase letter')
+      .matches(/[0-9]/).withMessage('Must contain at least one number'),
+  ],
   validate,
   ctrl.changePassword
 );

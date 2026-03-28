@@ -130,6 +130,25 @@ exports.create = async (req, res) => {
 
 exports.update = async (req, res) => {
   try {
+    // ── Validation guards ──────────────────────────────────────────────────
+    const VALID_STATUSES = ['active', 'on_leave', 'resigned', 'terminated', 'inactive'];
+    const VALID_EMP_TYPES = ['full_time', 'part_time', 'contract', 'intern'];
+    const TIME_REGEX = /^\d{2}:\d{2}$/;
+
+    if (req.body.status && !VALID_STATUSES.includes(req.body.status))
+      return res.status(400).json({ success: false, message: `Invalid status. Must be: ${VALID_STATUSES.join(', ')}` });
+    if (req.body.employmentType && !VALID_EMP_TYPES.includes(req.body.employmentType))
+      return res.status(400).json({ success: false, message: `Invalid employment type` });
+    if (req.body.baseSalary !== undefined && (isNaN(req.body.baseSalary) || +req.body.baseSalary < 0))
+      return res.status(400).json({ success: false, message: 'Base salary must be a non-negative number' });
+    if (req.body.workStartTime && !TIME_REGEX.test(req.body.workStartTime))
+      return res.status(400).json({ success: false, message: 'Work start time must be in HH:MM format' });
+    if (req.body.workEndTime && !TIME_REGEX.test(req.body.workEndTime))
+      return res.status(400).json({ success: false, message: 'Work end time must be in HH:MM format' });
+    // Prevent self-referencing reporting manager
+    if (req.body.reportingManager && req.body.reportingManager === req.params.id)
+      return res.status(400).json({ success: false, message: 'Employee cannot report to themselves' });
+
     const fields = [];
     const vals = [];
     const map = {
@@ -142,7 +161,11 @@ exports.update = async (req, res) => {
       reportingManager: 'reporting_manager_id', avatar: 'avatar',
     };
     for (const [key, col] of Object.entries(map)) {
-      if (req.body[key] !== undefined) { vals.push(req.body[key]); fields.push(`${col}=$${vals.length}`); }
+      if (req.body[key] !== undefined) {
+        // Lowercase emails on update
+        const val = key === 'email' ? (req.body[key]?.trim().toLowerCase() || req.body[key]) : req.body[key];
+        vals.push(val); fields.push(`${col}=$${vals.length}`);
+      }
     }
     if (!fields.length) return res.status(400).json({ success: false, message: 'No fields to update' });
     vals.push(new Date()); fields.push(`updated_at=$${vals.length}`);
@@ -152,6 +175,7 @@ exports.update = async (req, res) => {
     if (!full.rows[0]) return res.status(404).json({ success: false, message: 'Employee not found' });
     res.json({ success: true, data: fmtEmp(full.rows[0]) });
   } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ success: false, message: 'Email already in use by another employee' });
     res.status(500).json({ success: false, message: err.message });
   }
 };

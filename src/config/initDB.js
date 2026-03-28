@@ -208,6 +208,20 @@ const initDB = async () => {
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
+
+    -- ── Performance indexes ─────────────────────────────────────────────────
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users(LOWER(email));
+    CREATE INDEX IF NOT EXISTS idx_employees_status ON employees(status);
+    CREATE INDEX IF NOT EXISTS idx_employees_department ON employees(department_id);
+    CREATE INDEX IF NOT EXISTS idx_employees_email ON employees(LOWER(email));
+    CREATE INDEX IF NOT EXISTS idx_attendance_emp_date ON attendance(employee_id, date);
+    CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(date);
+    CREATE INDEX IF NOT EXISTS idx_attendance_status ON attendance(status);
+    CREATE INDEX IF NOT EXISTS idx_payroll_emp_period ON payroll(employee_id, month, year);
+    CREATE INDEX IF NOT EXISTS idx_payroll_status ON payroll(status);
+    CREATE INDEX IF NOT EXISTS idx_leaves_emp_status ON leaves(employee_id, status);
+    CREATE INDEX IF NOT EXISTS idx_leaves_dates ON leaves(start_date, end_date);
+    CREATE INDEX IF NOT EXISTS idx_breaks_emp_date ON breaks(employee_id, date);
   `);
   console.log('Database schema initialized');
 };
