@@ -175,21 +175,40 @@ exports.updateCredentials = async (req, res) => {
     if (!email && !password)
       return res.status(400).json({ success: false, message: 'Provide at least email or password to update' });
 
-    const empRes = await pool.query('SELECT id, user_id, email FROM employees WHERE id=$1', [req.params.id]);
+    const empRes = await pool.query(
+      `SELECT e.id, e.user_id, e.email, e.first_name, e.last_name FROM employees e WHERE e.id=$1`,
+      [req.params.id]
+    );
     if (!empRes.rows[0]) return res.status(404).json({ success: false, message: 'Employee not found' });
     const emp = empRes.rows[0];
-    if (!emp.user_id)
-      return res.status(400).json({ success: false, message: 'This employee has no login account. Create one first.' });
 
     await client.query('BEGIN');
-    if (email) {
-      await client.query('UPDATE users SET email=$1, updated_at=NOW() WHERE id=$2', [email, emp.user_id]);
-      await client.query('UPDATE employees SET email=$1, updated_at=NOW() WHERE id=$2', [email, emp.id]);
+
+    if (!emp.user_id) {
+      // No login account yet — create one now
+      const finalEmail = email || emp.email;
+      const finalPwd = password || 'Hr@123456';
+      const hashed = await bcrypt.hash(finalPwd, 12);
+      const fullName = `${emp.first_name} ${emp.last_name || ''}`.trim();
+      const userRes = await client.query(
+        `INSERT INTO users (name, email, password, role, employee_id) VALUES ($1,$2,$3,'employee',$4) RETURNING id`,
+        [fullName, finalEmail, hashed, emp.id]
+      );
+      await client.query(
+        `UPDATE employees SET user_id=$1, email=$2, updated_at=NOW() WHERE id=$3`,
+        [userRes.rows[0].id, finalEmail, emp.id]
+      );
+    } else {
+      if (email) {
+        await client.query('UPDATE users SET email=$1, updated_at=NOW() WHERE id=$2', [email, emp.user_id]);
+        await client.query('UPDATE employees SET email=$1, updated_at=NOW() WHERE id=$2', [email, emp.id]);
+      }
+      if (password) {
+        const hashed = await bcrypt.hash(password, 12);
+        await client.query('UPDATE users SET password=$1, updated_at=NOW() WHERE id=$2', [hashed, emp.user_id]);
+      }
     }
-    if (password) {
-      const hashed = await bcrypt.hash(password, 12);
-      await client.query('UPDATE users SET password=$1, updated_at=NOW() WHERE id=$2', [hashed, emp.user_id]);
-    }
+
     await client.query('COMMIT');
 
     res.json({
