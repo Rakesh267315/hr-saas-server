@@ -90,6 +90,8 @@ exports.create = async (req, res) => {
     // Auto-generate employee code
     const codeRes = await client.query(`SELECT COUNT(*) FROM employees`);
     const code = `EMP${String(parseInt(codeRes.rows[0].count) + 1).padStart(4, '0')}`;
+    // Use placeholder email if not provided (email is NOT NULL in DB)
+    const finalEmail = email?.trim() || `${code.toLowerCase()}@noemail.local`;
 
     const empRes = await client.query(
       `INSERT INTO employees (employee_code,first_name,last_name,email,phone,date_of_birth,gender,address,
@@ -98,7 +100,7 @@ exports.create = async (req, res) => {
         bank_account_name,bank_account_number,bank_ifsc)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
        RETURNING *`,
-      [code, firstName, lastName, email, phone, dateOfBirth||null, gender, address,
+      [code, firstName, lastName, finalEmail, phone, dateOfBirth||null, gender, address,
        department||null, designation, employmentType||'full_time', joiningDate||null,
        baseSalary||0, hourlyRate||0, workStartTime||'09:00', workEndTime||'18:00',
        reportingManager||null, bankAccount?.name||null, bankAccount?.accountNumber||null, bankAccount?.ifsc||null]
