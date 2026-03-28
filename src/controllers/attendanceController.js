@@ -184,17 +184,24 @@ exports.markAbsent = async (req, res) => {
 
 // ── ATTENDANCE CORRECTION ─────────────────────────────────────────────────────
 
-// GET /attendance/all?date=YYYY-MM-DD&employeeId=&month=&year=
+// GET /attendance/all?date=&from=&to=&employeeId=&departmentId=&status=&month=&year=
 exports.getAllAttendance = async (req, res) => {
   try {
-    const { date, employeeId, month, year } = req.query;
+    const { date, from, to, employeeId, departmentId, status, month, year } = req.query;
     let whereClauses = [];
     let params = [];
     let idx = 1;
 
+    // Date filtering — supports: single date, from/to range, or month/year
     if (date) {
       whereClauses.push(`a.date = $${idx++}`);
       params.push(date);
+    } else if (from && to) {
+      whereClauses.push(`a.date >= $${idx++} AND a.date <= $${idx++}`);
+      params.push(from, to);
+    } else if (from) {
+      whereClauses.push(`a.date >= $${idx++}`);
+      params.push(from);
     } else if (month && year) {
       const start = `${year}-${String(month).padStart(2, '0')}-01`;
       const end = new Date(year, month, 0).toISOString().split('T')[0];
@@ -204,6 +211,14 @@ exports.getAllAttendance = async (req, res) => {
     if (employeeId) {
       whereClauses.push(`a.employee_id = $${idx++}`);
       params.push(employeeId);
+    }
+    if (departmentId) {
+      whereClauses.push(`e.department_id = $${idx++}`);
+      params.push(departmentId);
+    }
+    if (status) {
+      whereClauses.push(`a.status = $${idx++}`);
+      params.push(status);
     }
 
     const where = whereClauses.length ? 'WHERE ' + whereClauses.join(' AND ') : '';
@@ -244,6 +259,22 @@ exports.correctAttendance = async (req, res) => {
       overtimeMinutes = workHours > 8 ? Math.round((workHours - 8) * 60) : 0;
     }
 
+    // Recalculate late_minutes if checkIn is being corrected
+    let lateMinutes = null;
+    if (checkIn) {
+      const attRow = await pool.query(
+        `SELECT e.work_start_time FROM attendance a JOIN employees e ON e.id=a.employee_id WHERE a.id=$1`,
+        [id]
+      );
+      if (attRow.rows[0]?.work_start_time) {
+        const checkInDate = new Date(checkIn);
+        const [h, m] = attRow.rows[0].work_start_time.split(':').map(Number);
+        const scheduled = new Date(checkInDate);
+        scheduled.setHours(h, m, 0, 0);
+        lateMinutes = Math.max(0, Math.round((checkInDate - scheduled) / 60000));
+      }
+    }
+
     const fields = [];
     const vals = [];
     let p = 1;
@@ -254,6 +285,7 @@ exports.correctAttendance = async (req, res) => {
     if (notes !== undefined)        { fields.push(`notes=$${p++}`);              vals.push(notes || null); }
     if (workHours !== null)         { fields.push(`work_hours=$${p++}`);         vals.push(workHours); }
     if (overtimeMinutes !== null)   { fields.push(`overtime_minutes=$${p++}`);   vals.push(overtimeMinutes); }
+    if (lateMinutes !== null)       { fields.push(`late_minutes=$${p++}`);       vals.push(lateMinutes); }
 
     fields.push(`edited_by=$${p++}`, `edited_at=NOW()`, `edit_reason=$${p++}`, `is_locked=true`, `updated_at=NOW()`);
     vals.push(adminUserId, editReason.trim());

@@ -214,7 +214,7 @@ exports.getStats = async (req, res) => {
       pool.query('SELECT COUNT(*) FROM employees'),
       pool.query(`SELECT COUNT(*) FROM employees WHERE status='active'`),
       pool.query(`SELECT COUNT(*) FROM employees WHERE status='on_leave'`),
-      pool.query(`SELECT d.name, COUNT(e.id) AS count FROM employees e JOIN departments d ON d.id=e.department_id GROUP BY d.name`),
+      pool.query(`SELECT COALESCE(d.name,'No Department') AS name, COUNT(e.id) AS count FROM employees e LEFT JOIN departments d ON d.id=e.department_id WHERE e.status='active' GROUP BY d.name ORDER BY count DESC`),
     ]);
     res.json({ success: true, data: {
       total: parseInt(total.rows[0].count),
