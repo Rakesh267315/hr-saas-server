@@ -12,6 +12,10 @@ const fmtAtt = (r) => {
     status: r.status, lateMinutes: r.late_minutes || 0,
     overtimeMinutes: r.overtime_minutes || 0, workHours: parseFloat(r.work_hours) || 0,
     notes: r.notes, createdAt: r.created_at,
+    isLocked: r.is_locked || false,
+    editedBy: r.edited_by_name || null,
+    editedAt: r.edited_at || null,
+    editReason: r.edit_reason || null,
   };
 };
 
@@ -77,7 +81,7 @@ exports.checkOut = async (req, res) => {
       : 0;
 
     const r = await pool.query(
-      `UPDATE attendance SET check_out=$1, work_hours=$2, overtime_minutes=$3, updated_at=NOW()
+      `UPDATE attendance SET check_out=$1, work_hours=$2, overtime_minutes=$3, is_locked=true, updated_at=NOW()
        WHERE employee_id=$4 AND date=$5 RETURNING *`,
       [now, workHours.toFixed(2), overtimeMinutes, employeeId, today]
     );
@@ -173,6 +177,117 @@ exports.markAbsent = async (req, res) => {
       [targetDate]
     );
     res.json({ success: true, message: `Marked ${r.rowCount} employees absent` });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ── ATTENDANCE CORRECTION ─────────────────────────────────────────────────────
+
+// GET /attendance/all?date=YYYY-MM-DD&employeeId=&month=&year=
+exports.getAllAttendance = async (req, res) => {
+  try {
+    const { date, employeeId, month, year } = req.query;
+    let whereClauses = [];
+    let params = [];
+    let idx = 1;
+
+    if (date) {
+      whereClauses.push(`a.date = $${idx++}`);
+      params.push(date);
+    } else if (month && year) {
+      const start = `${year}-${String(month).padStart(2, '0')}-01`;
+      const end = new Date(year, month, 0).toISOString().split('T')[0];
+      whereClauses.push(`a.date >= $${idx++} AND a.date <= $${idx++}`);
+      params.push(start, end);
+    }
+    if (employeeId) {
+      whereClauses.push(`a.employee_id = $${idx++}`);
+      params.push(employeeId);
+    }
+
+    const where = whereClauses.length ? 'WHERE ' + whereClauses.join(' AND ') : '';
+    const r = await pool.query(
+      `SELECT a.*, e.first_name, e.last_name, e.employee_code, e.designation, e.department_id,
+              d.name AS department_name,
+              u.name AS edited_by_name
+       FROM attendance a
+       JOIN employees e ON e.id = a.employee_id
+       LEFT JOIN departments d ON d.id = e.department_id
+       LEFT JOIN users u ON u.id = a.edited_by
+       ${where}
+       ORDER BY a.date DESC, a.check_in DESC NULLS LAST`,
+      params
+    );
+    res.json({ success: true, data: r.rows.map(fmtAtt) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// PATCH /attendance/:id/correct  — admin edits any field
+exports.correctAttendance = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { checkIn, checkOut, status, notes, editReason } = req.body;
+    const adminUserId = req.user.id;
+
+    if (!editReason?.trim())
+      return res.status(400).json({ success: false, message: 'Edit reason is required' });
+
+    // Recalculate work hours if both times provided
+    let workHours = null;
+    let overtimeMinutes = null;
+    if (checkIn && checkOut) {
+      const diff = (new Date(checkOut) - new Date(checkIn)) / 3600000;
+      workHours = Math.max(0, Math.round(diff * 100) / 100);
+      overtimeMinutes = workHours > 8 ? Math.round((workHours - 8) * 60) : 0;
+    }
+
+    const fields = [];
+    const vals = [];
+    let p = 1;
+
+    if (checkIn !== undefined)      { fields.push(`check_in=$${p++}`);           vals.push(checkIn || null); }
+    if (checkOut !== undefined)     { fields.push(`check_out=$${p++}`);          vals.push(checkOut || null); }
+    if (status)                     { fields.push(`status=$${p++}`);             vals.push(status); }
+    if (notes !== undefined)        { fields.push(`notes=$${p++}`);              vals.push(notes || null); }
+    if (workHours !== null)         { fields.push(`work_hours=$${p++}`);         vals.push(workHours); }
+    if (overtimeMinutes !== null)   { fields.push(`overtime_minutes=$${p++}`);   vals.push(overtimeMinutes); }
+
+    fields.push(`edited_by=$${p++}`, `edited_at=NOW()`, `edit_reason=$${p++}`, `is_locked=true`, `updated_at=NOW()`);
+    vals.push(adminUserId, editReason.trim());
+
+    const r = await pool.query(
+      `UPDATE attendance SET ${fields.join(', ')} WHERE id=$${p} RETURNING *`,
+      [...vals, id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ success: false, message: 'Attendance record not found' });
+    res.json({ success: true, data: fmtAtt(r.rows[0]), message: 'Attendance corrected successfully' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// PATCH /attendance/:id/unlock  — admin re-opens a checked-out day
+exports.unlockAttendance = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { editReason } = req.body;
+    const adminUserId = req.user.id;
+
+    if (!editReason?.trim())
+      return res.status(400).json({ success: false, message: 'Reason is required to unlock attendance' });
+
+    const r = await pool.query(
+      `UPDATE attendance
+       SET check_out=NULL, work_hours=0, overtime_minutes=0,
+           is_locked=false, edited_by=$1, edited_at=NOW(), edit_reason=$2, updated_at=NOW()
+       WHERE id=$3 RETURNING *`,
+      [adminUserId, editReason.trim(), id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ success: false, message: 'Attendance record not found' });
+    res.json({ success: true, data: fmtAtt(r.rows[0]), message: 'Attendance unlocked. Employee can check in again.' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

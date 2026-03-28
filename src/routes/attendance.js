@@ -4,11 +4,14 @@ const { authenticate, authorize } = require('../middleware/auth');
 
 router.use(authenticate);
 
-router.get('/today', authorize('admin', 'hr', 'super_admin'), ctrl.getToday);
-router.post('/check-in', ctrl.checkIn);
-router.post('/check-out', ctrl.checkOut);
-router.get('/employee/:id', ctrl.getByEmployee);
+router.get('/today',                authorize('admin', 'hr', 'super_admin'), ctrl.getToday);
+router.get('/all',                  authorize('admin', 'hr', 'super_admin'), ctrl.getAllAttendance);
+router.post('/check-in',            ctrl.checkIn);
+router.post('/check-out',           ctrl.checkOut);
+router.get('/employee/:id',         ctrl.getByEmployee);
 router.get('/employee/:id/summary', ctrl.getSummary);
-router.post('/mark-absent', authorize('admin', 'hr', 'super_admin'), ctrl.markAbsent);
+router.post('/mark-absent',         authorize('admin', 'hr', 'super_admin'), ctrl.markAbsent);
+router.patch('/:id/correct',        authorize('admin', 'hr', 'super_admin'), ctrl.correctAttendance);
+router.patch('/:id/unlock',         authorize('admin', 'hr', 'super_admin'), ctrl.unlockAttendance);
 
 module.exports = router;

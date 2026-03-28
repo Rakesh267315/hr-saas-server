@@ -76,6 +76,10 @@ const initDB = async () => {
       work_hours NUMERIC DEFAULT 0,
       notes TEXT,
       marked_by UUID REFERENCES users(id),
+      is_locked BOOLEAN DEFAULT false,
+      edited_by UUID REFERENCES users(id),
+      edited_at TIMESTAMPTZ,
+      edit_reason TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(employee_id, date)
@@ -186,6 +190,12 @@ const initDB = async () => {
     ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS leave_is_paid BOOLEAN DEFAULT true;
     ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS leave_approval_required BOOLEAN DEFAULT true;
     ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS company_policies TEXT DEFAULT '';
+
+    -- Attendance correction columns (safe migration)
+    ALTER TABLE attendance ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT false;
+    ALTER TABLE attendance ADD COLUMN IF NOT EXISTS edited_by UUID REFERENCES users(id);
+    ALTER TABLE attendance ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
+    ALTER TABLE attendance ADD COLUMN IF NOT EXISTS edit_reason TEXT;
 
     CREATE TABLE IF NOT EXISTS breaks (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
