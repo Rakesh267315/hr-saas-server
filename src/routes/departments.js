@@ -6,8 +6,22 @@ router.use(authenticate);
 
 router.get('/', async (req, res) => {
   try {
-    const r = await pool.query(`SELECT * FROM departments WHERE is_active=true ORDER BY name`);
-    const depts = r.rows.map((d) => ({ ...d, _id: d.id }));
+    // Live employee count per department — always accurate, never stale
+    const r = await pool.query(`
+      SELECT
+        d.*,
+        COUNT(e.id) FILTER (WHERE e.status = 'active') AS employee_count
+      FROM departments d
+      LEFT JOIN employees e ON e.department_id = d.id
+      WHERE d.is_active = true
+      GROUP BY d.id
+      ORDER BY d.name
+    `);
+    const depts = r.rows.map((d) => ({
+      ...d,
+      _id: d.id,
+      headCount: parseInt(d.employee_count) || 0,
+    }));
     res.json({ success: true, data: depts });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
