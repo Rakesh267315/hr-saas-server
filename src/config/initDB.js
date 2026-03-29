@@ -209,6 +209,26 @@ const initDB = async () => {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
 
+    -- ── Face Recognition ────────────────────────────────────────────────────
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS face_descriptor JSONB;
+    ALTER TABLE employees ADD COLUMN IF NOT EXISTS face_registered_at TIMESTAMPTZ;
+
+    CREATE TABLE IF NOT EXISTS face_attendance_logs (
+      id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      employee_id    UUID REFERENCES employees(id) ON DELETE CASCADE NOT NULL,
+      date           DATE NOT NULL,
+      checked_in_at  TIMESTAMPTZ DEFAULT NOW(),
+      confidence     INTEGER DEFAULT 0,
+      distance       FLOAT DEFAULT 0,
+      status         VARCHAR(20) DEFAULT 'success'
+                       CHECK (status IN ('success','failed','already_in')),
+      created_at     TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_face_logs_emp_date ON face_attendance_logs(employee_id, date);
+    CREATE INDEX IF NOT EXISTS idx_face_logs_date     ON face_attendance_logs(date);
+    CREATE INDEX IF NOT EXISTS idx_face_logs_status   ON face_attendance_logs(status);
+
     -- ── Performance indexes ─────────────────────────────────────────────────
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(LOWER(email));
     CREATE INDEX IF NOT EXISTS idx_employees_status ON employees(status);

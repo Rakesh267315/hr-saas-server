@@ -79,6 +79,7 @@ app.use('/api/v1/leaves', apiLimiter, require('./src/routes/leaves'));
 app.use('/api/v1/payroll', apiLimiter, require('./src/routes/payroll'));
 app.use('/api/v1/settings', apiLimiter, require('./src/routes/settings'));
 app.use('/api/v1/breaks', apiLimiter, require('./src/routes/breaks'));
+app.use('/api/v1/face',  apiLimiter, require('./src/routes/face'));
 
 // ── Health check ───────────────────────────────────────────────────────────
 app.get('/api/health', (_, res) => res.json({ status: 'ok', db: 'supabase', timestamp: new Date() }));
