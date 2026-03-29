@@ -196,6 +196,98 @@ exports.faceCheckin = async (req, res) => {
   }
 };
 
+// ── POST /face/checkout ────────────────────────────────────────────────────
+exports.faceCheckout = async (req, res) => {
+  try {
+    const { employeeId, descriptor } = req.body;
+
+    if (!employeeId)
+      return res.status(400).json({ success: false, message: 'employeeId is required' });
+    if (!Array.isArray(descriptor) || descriptor.length !== 128)
+      return res.status(400).json({ success: false, message: 'Invalid face descriptor' });
+
+    // Fetch employee + stored descriptor
+    const empRes = await pool.query(
+      `SELECT id, first_name, last_name, face_descriptor, work_end_time, status
+       FROM employees WHERE id=$1`,
+      [employeeId]
+    );
+
+    if (!empRes.rows[0])
+      return res.status(404).json({ success: false, message: 'Employee not found' });
+    if (empRes.rows[0].status !== 'active')
+      return res.status(403).json({ success: false, message: 'Employee account is not active' });
+    if (!empRes.rows[0].face_descriptor)
+      return res.status(400).json({
+        success: false,
+        message: 'Face not registered. Please register your face first.',
+      });
+
+    const emp = empRes.rows[0];
+
+    // Parse stored descriptor
+    const stored = Array.isArray(emp.face_descriptor)
+      ? emp.face_descriptor
+      : (typeof emp.face_descriptor === 'string' ? JSON.parse(emp.face_descriptor) : emp.face_descriptor);
+
+    const distance   = euclideanDistance(descriptor, stored);
+    const confidence = Math.max(0, Math.min(100, Math.round((1 - distance / 1.2) * 100)));
+    const THRESHOLD  = 0.5;
+
+    if (distance > THRESHOLD) {
+      return res.status(401).json({
+        success: false,
+        message: 'Face not recognized. Please look directly at the camera and try again.',
+        confidence,
+        distance: parseFloat(distance.toFixed(4)),
+      });
+    }
+
+    // ── Check today's attendance ──────────────────────────────────────────
+    const today = new Date().toISOString().split('T')[0];
+    const att   = await pool.query(
+      'SELECT id, check_in, check_out FROM attendance WHERE employee_id=$1 AND date=$2',
+      [employeeId, today]
+    );
+
+    if (!att.rows[0] || !att.rows[0].check_in)
+      return res.status(409).json({ success: false, message: 'You have not checked in yet today' });
+
+    if (att.rows[0].check_out)
+      return res.status(409).json({ success: false, message: 'Already checked out today' });
+
+    const now         = new Date();
+    const checkIn     = new Date(att.rows[0].check_in);
+    const workHours   = parseFloat(((now - checkIn) / 3600000).toFixed(2));
+
+    // Overtime: hours beyond scheduled end time
+    const [eh, em]  = (emp.work_end_time || '18:00').split(':').map(Number);
+    const scheduled = new Date(now);
+    scheduled.setHours(eh, em, 0, 0);
+    const overtimeMins = Math.max(0, Math.round((now - scheduled) / 60000));
+
+    const r = await pool.query(
+      `UPDATE attendance
+         SET check_out=$1, work_hours=$2, overtime_minutes=$3,
+             is_locked=true, notes=COALESCE(notes,'') || ' | Face Recognition Check-out',
+             updated_at=NOW()
+       WHERE employee_id=$4 AND date=$5
+       RETURNING *`,
+      [now, workHours, overtimeMins, employeeId, today]
+    );
+
+    console.log(`[FACE] Checkout: empId=${employeeId} confidence=${confidence}% at ${now.toISOString()}`);
+
+    res.json({
+      success: true,
+      message: `Goodbye, ${emp.first_name}! Check-out successful.`,
+      data: { ...r.rows[0], confidence, distance: parseFloat(distance.toFixed(4)) },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // ── GET /face/logs ─────────────────────────────────────────────────────────
 exports.getLogs = async (req, res) => {
   try {

@@ -14,7 +14,8 @@ router.delete('/:id', authorize('admin', 'hr', 'super_admin'), ctrl.deleteFace);
 router.get('/logs', authorize('admin', 'hr', 'super_admin'), ctrl.getLogs);
 router.get('/:id/status', ctrl.status);
 
-// Face-based attendance check-in
-router.post('/checkin', ctrl.faceCheckin);
+// Face-based attendance check-in / check-out
+router.post('/checkin',  ctrl.faceCheckin);
+router.post('/checkout', ctrl.faceCheckout);
 
 module.exports = router;
