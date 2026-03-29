@@ -29,6 +29,9 @@ const fmtEmp = (e) => {
     reportingManager: e.reporting_manager_id
       ? { _id: e.reporting_manager_id, firstName: e.rm_first_name, lastName: e.rm_last_name }
       : null,
+    // Face ID status — included in list for admin table icon
+    faceRegistered: e.face_descriptor != null,
+    faceRegisteredAt: e.face_registered_at || null,
     createdAt: e.created_at, updatedAt: e.updated_at,
   };
 };
