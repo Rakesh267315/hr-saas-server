@@ -29,6 +29,16 @@ router.post('/login',
 
 router.get('/me', authenticate, ctrl.getMe);
 
+router.patch('/update-profile',
+  authenticate,
+  [
+    body('name').optional().trim().notEmpty().withMessage('Name cannot be empty'),
+    body('email').optional().isEmail().normalizeEmail().withMessage('Valid email required'),
+  ],
+  validate,
+  ctrl.updateProfile
+);
+
 router.patch('/change-password',
   authenticate,
   [

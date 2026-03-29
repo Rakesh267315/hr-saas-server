@@ -94,6 +94,30 @@ exports.getMe = async (req, res) => {
   }
 };
 
+exports.updateProfile = async (req, res) => {
+  try {
+    const { name, email } = req.body;
+    if (!name && !email)
+      return res.status(400).json({ success: false, message: 'Provide name or email to update' });
+
+    const fields = []; const vals = [];
+    if (name)  { vals.push(name.trim());                  fields.push(`name=$${vals.length}`); }
+    if (email) { vals.push(email.trim().toLowerCase());   fields.push(`email=$${vals.length}`); }
+    vals.push(new Date()); fields.push(`updated_at=$${vals.length}`);
+    vals.push(req.user.id);
+
+    const r = await pool.query(
+      `UPDATE users SET ${fields.join(',')} WHERE id=$${vals.length} RETURNING id,name,email,role,avatar`,
+      vals
+    );
+    res.json({ success: true, message: 'Profile updated', data: { user: { ...r.rows[0], _id: r.rows[0].id } } });
+  } catch (err) {
+    if (err.code === '23505')
+      return res.status(409).json({ success: false, message: 'Email already in use by another account' });
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 exports.changePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
