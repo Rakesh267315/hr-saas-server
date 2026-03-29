@@ -242,6 +242,61 @@ const initDB = async () => {
     CREATE INDEX IF NOT EXISTS idx_leaves_emp_status ON leaves(employee_id, status);
     CREATE INDEX IF NOT EXISTS idx_leaves_dates ON leaves(start_date, end_date);
     CREATE INDEX IF NOT EXISTS idx_breaks_emp_date ON breaks(employee_id, date);
+
+    -- ── Notifications ────────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS notifications (
+      id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id     UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+      type        VARCHAR(50) NOT NULL,
+      title       VARCHAR(255) NOT NULL,
+      message     TEXT NOT NULL,
+      link        VARCHAR(255),
+      is_read     BOOLEAN DEFAULT false,
+      created_at  TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_notif_user     ON notifications(user_id, is_read);
+    CREATE INDEX IF NOT EXISTS idx_notif_created  ON notifications(created_at DESC);
+
+    -- ── Performance Goals & Reviews ──────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS performance_goals (
+      id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      employee_id   UUID REFERENCES employees(id) ON DELETE CASCADE NOT NULL,
+      title         VARCHAR(255) NOT NULL,
+      description   TEXT,
+      category      VARCHAR(100) DEFAULT 'professional',
+      target_date   DATE,
+      progress      INTEGER DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+      status        VARCHAR(50) DEFAULT 'active'
+                      CHECK (status IN ('active','completed','cancelled','overdue')),
+      created_by    UUID REFERENCES users(id),
+      created_at    TIMESTAMPTZ DEFAULT NOW(),
+      updated_at    TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_goals_emp    ON performance_goals(employee_id, status);
+    CREATE INDEX IF NOT EXISTS idx_goals_target ON performance_goals(target_date);
+
+    CREATE TABLE IF NOT EXISTS performance_reviews (
+      id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      employee_id    UUID REFERENCES employees(id) ON DELETE CASCADE NOT NULL,
+      reviewer_id    UUID REFERENCES users(id),
+      review_period  VARCHAR(50),
+      review_date    DATE DEFAULT CURRENT_DATE,
+      overall_rating NUMERIC(3,1) CHECK (overall_rating BETWEEN 1 AND 5),
+      work_quality   NUMERIC(3,1),
+      punctuality    NUMERIC(3,1),
+      teamwork       NUMERIC(3,1),
+      communication  NUMERIC(3,1),
+      leadership     NUMERIC(3,1),
+      strengths      TEXT,
+      improvements   TEXT,
+      comments       TEXT,
+      status         VARCHAR(50) DEFAULT 'draft'
+                       CHECK (status IN ('draft','submitted','acknowledged')),
+      created_at     TIMESTAMPTZ DEFAULT NOW(),
+      updated_at     TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_reviews_emp    ON performance_reviews(employee_id);
+    CREATE INDEX IF NOT EXISTS idx_reviews_period ON performance_reviews(review_period);
   `);
   console.log('Database schema initialized');
 };

@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { eachDayOfInterval, isWeekend, isValid, parseISO } = require('date-fns');
+const { createNotification } = require('./notificationController');
 
 const countWorkdays = (start, end) =>
   eachDayOfInterval({ start, end }).filter((d) => !isWeekend(d)).length;
@@ -79,6 +80,21 @@ exports.apply = async (req, res) => {
       [employeeId, leaveType, startDate, endDate, totalDays, reason?.trim() || null, isHalfDay || false]
     );
     const full = await pool.query(`SELECT ${leaveSelect} WHERE l.id=$1`, [r.rows[0].id]);
+
+    // Notify all admins + HR about new leave request
+    try {
+      const admins = await pool.query(
+        `SELECT id FROM users WHERE role IN ('admin','hr','super_admin') AND is_active=true`
+      );
+      const emp = full.rows[0];
+      await createNotification(admins.rows.map((u) => u.id), {
+        type: 'leave_request',
+        title: 'New Leave Request',
+        message: `${emp.first_name} ${emp.last_name || ''} applied for ${leaveType} leave (${totalDays} day${totalDays > 1 ? 's' : ''}) from ${startDate} to ${endDate}.`,
+        link: '/admin/leaves',
+      });
+    } catch {}
+
     res.status(201).json({ success: true, data: fmtLeave(full.rows[0]) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -154,6 +170,25 @@ exports.updateStatus = async (req, res) => {
     }
 
     const updated = await pool.query(`SELECT ${leaveSelect} WHERE l.id=$1`, [req.params.id]);
+
+    // Notify the employee about their leave decision
+    try {
+      const empUser = await pool.query(
+        'SELECT user_id, first_name FROM employees WHERE id=$1', [leave.employee_id]
+      );
+      if (empUser.rows[0]?.user_id) {
+        const label = status === 'approved' ? '✅ Approved' : '❌ Rejected';
+        await createNotification(empUser.rows[0].user_id, {
+          type: status === 'approved' ? 'leave_approved' : 'leave_rejected',
+          title: `Leave Request ${label}`,
+          message: status === 'approved'
+            ? `Your ${leave.leave_type} leave (${leave.total_days} days) has been approved.`
+            : `Your ${leave.leave_type} leave was rejected. Reason: ${rejectionReason}`,
+          link: '/employee/leaves',
+        });
+      }
+    } catch {}
+
     res.json({ success: true, data: fmtLeave(updated.rows[0]) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

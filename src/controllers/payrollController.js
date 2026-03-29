@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { getSettings } = require('./settingsController');
+const { createNotification } = require('./notificationController');
 
 const getWorkingDays = (year, month) => {
   let count = 0;
@@ -211,6 +212,27 @@ exports.updateStatus = async (req, res) => {
       [status, paymentDate || null, paymentMethod || null, notes || null, req.user.id, req.params.id]
     );
     if (!r.rows[0]) return res.status(404).json({ success: false, message: 'Payroll not found' });
+
+    // Notify employee when payslip is paid
+    if (status === 'paid') {
+      try {
+        const emp = await pool.query(
+          'SELECT e.user_id, e.first_name, p.net_salary, p.month, p.year FROM employees e JOIN payroll p ON p.employee_id=e.id WHERE p.id=$1',
+          [req.params.id]
+        );
+        if (emp.rows[0]?.user_id) {
+          const { net_salary, month, year } = emp.rows[0];
+          const monthName = new Date(year, month - 1).toLocaleString('default', { month: 'long' });
+          await createNotification(emp.rows[0].user_id, {
+            type: 'payroll_paid',
+            title: '💰 Salary Credited',
+            message: `Your salary of ₹${parseFloat(net_salary).toLocaleString('en-IN')} for ${monthName} ${year} has been processed.`,
+            link: '/employee/payslips',
+          });
+        }
+      } catch {}
+    }
+
     res.json({ success: true, data: fmtPayroll(r.rows[0]) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
