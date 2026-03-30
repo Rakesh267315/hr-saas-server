@@ -45,6 +45,14 @@ exports.checkIn = async (req, res) => {
     const today = new Date(now.toLocaleString('en-US', { timeZone: tz }))
       .toLocaleDateString('en-CA'); // YYYY-MM-DD in company timezone
 
+    // Block regular check-in when face recognition is enforced globally
+    if (settings.face_recognition_enabled)
+      return res.status(403).json({
+        success: false,
+        message: 'Face recognition attendance is enabled. Please use Face Check-in to mark your attendance.',
+        code: 'FACE_REQUIRED',
+      });
+
     const existing = await pool.query('SELECT check_in FROM attendance WHERE employee_id=$1 AND date=$2', [employeeId, today]);
     if (existing.rows[0]?.check_in)
       return res.status(409).json({ success: false, message: 'Already checked in today' });
@@ -76,6 +84,14 @@ exports.checkOut = async (req, res) => {
     const tz = settings.timezone || 'Asia/Kolkata';
     const today = new Date(new Date().toLocaleString('en-US', { timeZone: tz }))
       .toLocaleDateString('en-CA');
+    // Block regular check-out when face recognition is enforced globally
+    if (settings.face_recognition_enabled)
+      return res.status(403).json({
+        success: false,
+        message: 'Face recognition attendance is enabled. Please use Face Check-out to mark your attendance.',
+        code: 'FACE_REQUIRED',
+      });
+
     const att = await pool.query('SELECT * FROM attendance WHERE employee_id=$1 AND date=$2', [employeeId, today]);
     if (!att.rows[0] || !att.rows[0].check_in)
       return res.status(400).json({ success: false, message: 'No check-in found for today' });

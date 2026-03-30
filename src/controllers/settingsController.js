@@ -31,6 +31,8 @@ const fmt = (r) => {
     leaveApprovalRequired: r.leave_approval_required ?? true,
     // Policies
     companyPolicies: r.company_policies || '',
+    // Face Recognition
+    faceRecognitionEnabled: r.face_recognition_enabled ?? false,
   };
 };
 
@@ -54,7 +56,7 @@ exports.update = async (req, res) => {
       lateCountForHalfDay, overtimeMultiplier, hraPercent,
       transportAllowance, medicalAllowance, pfPercent, taxPercent, taxThreshold,
       monthlyLeaveLimit, sickLeaveLimit, casualLeaveLimit, leaveIsPaid, leaveApprovalRequired,
-      companyPolicies,
+      companyPolicies, faceRecognitionEnabled,
     } = req.body;
 
     const r = await pool.query(
@@ -62,8 +64,9 @@ exports.update = async (req, res) => {
         grace_period_minutes,half_day_after_minutes,absent_after_minutes,
         late_count_for_half_day,overtime_multiplier,hra_percent,transport_allowance,medical_allowance,
         pf_percent,tax_percent,tax_threshold,
-        monthly_leave_limit,sick_leave_limit,casual_leave_limit,leave_is_paid,leave_approval_required,company_policies)
-       VALUES ('default',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+        monthly_leave_limit,sick_leave_limit,casual_leave_limit,leave_is_paid,leave_approval_required,company_policies,
+        face_recognition_enabled)
+       VALUES ('default',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
        ON CONFLICT (company_id) DO UPDATE SET
          company_name=COALESCE($1,company_settings.company_name),
          office_start_time=COALESCE($2,company_settings.office_start_time),
@@ -87,6 +90,7 @@ exports.update = async (req, res) => {
          leave_is_paid=COALESCE($20,company_settings.leave_is_paid),
          leave_approval_required=COALESCE($21,company_settings.leave_approval_required),
          company_policies=COALESCE($22,company_settings.company_policies),
+         face_recognition_enabled=COALESCE($23,company_settings.face_recognition_enabled),
          updated_at=NOW()
        RETURNING *`,
       [
@@ -98,6 +102,7 @@ exports.update = async (req, res) => {
         leaveIsPaid != null ? leaveIsPaid : null,
         leaveApprovalRequired != null ? leaveApprovalRequired : null,
         companyPolicies ?? null,
+        faceRecognitionEnabled != null ? faceRecognitionEnabled : null,
       ]
     );
     res.json({ success: true, data: fmt(r.rows[0]) });

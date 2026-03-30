@@ -191,6 +191,8 @@ const initDB = async () => {
     ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS leave_is_paid BOOLEAN DEFAULT true;
     ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS leave_approval_required BOOLEAN DEFAULT true;
     ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS company_policies TEXT DEFAULT '';
+    -- Face recognition attendance toggle (global switch — admin/hr only)
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS face_recognition_enabled BOOLEAN DEFAULT false;
 
     -- Attendance correction columns (safe migration)
     ALTER TABLE attendance ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT false;
