@@ -26,7 +26,72 @@ const leaveSelect = `
   LEFT JOIN users u ON u.id=l.approved_by
 `;
 
-const VALID_LEAVE_TYPES = ['annual', 'sick', 'casual', 'maternity', 'unpaid'];
+const VALID_LEAVE_TYPES = ['annual', 'sick', 'casual', 'maternity', 'unpaid', 'CL', 'SL'];
+
+// ── Monthly Leave Policy (CL = Casual, SL = Sick) ─────────────────────────────
+const MONTHLY_POLICY = {
+  CL: { defaultPerMonth: 2, maxCarryForward: 6, label: 'Casual Leave' },
+  SL: { defaultPerMonth: 1, maxCarryForward: 6, label: 'Sick Leave' },
+};
+
+/**
+ * Recursively compute monthly leave balance for CL + SL.
+ * Upserts result into leave_monthly_balances for caching.
+ * @param {string} employeeId
+ * @param {string} month  - format YYYY-MM
+ */
+const computeMonthlyBalance = async (employeeId, month) => {
+  const [year, mon] = month.split('-').map(Number);
+  const monthStart = `${month}-01`;
+  const lastDay = new Date(year, mon, 0).getDate(); // last day of month
+  const monthEnd  = `${month}-${String(lastDay).padStart(2, '0')}`;
+  const result = {};
+
+  for (const [type, policy] of Object.entries(MONTHLY_POLICY)) {
+    // Count approved leaves of this type within the month
+    const usedRes = await pool.query(
+      `SELECT COALESCE(SUM(total_days), 0) AS used
+       FROM leaves
+       WHERE employee_id=$1 AND leave_type=$2 AND status='approved'
+         AND start_date >= $3 AND start_date <= $4`,
+      [employeeId, type, monthStart, monthEnd]
+    );
+    const usedLeaves = parseFloat(usedRes.rows[0].used);
+
+    // Get carry-forward from previous month's remaining balance
+    let carryForward = 0;
+    const prevDate  = new Date(year, mon - 2, 1); // mon-2 because months are 0-indexed
+    const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+
+    // Only carry forward if we're past the first ever month
+    const storedRes = await pool.query(
+      `SELECT remaining_leaves FROM leave_monthly_balances
+       WHERE employee_id=$1 AND month=$2 AND leave_type=$3`,
+      [employeeId, prevMonth, type]
+    );
+    if (storedRes.rows[0]) {
+      carryForward = Math.min(parseFloat(storedRes.rows[0].remaining_leaves), policy.maxCarryForward);
+    }
+    // (No recursive back-fill to keep it simple and avoid infinite loops)
+
+    const totalLeaves     = policy.defaultPerMonth + carryForward;
+    const remainingLeaves = Math.max(0, totalLeaves - usedLeaves);
+
+    // Upsert cache
+    await pool.query(
+      `INSERT INTO leave_monthly_balances
+         (employee_id,month,leave_type,default_leaves,carry_forward,total_leaves,used_leaves,remaining_leaves)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       ON CONFLICT (employee_id,month,leave_type) DO UPDATE SET
+         default_leaves=$4, carry_forward=$5, total_leaves=$6,
+         used_leaves=$7, remaining_leaves=$8, updated_at=NOW()`,
+      [employeeId, month, type, policy.defaultPerMonth, carryForward, totalLeaves, usedLeaves, remainingLeaves]
+    );
+
+    result[type] = { type, label: policy.label, defaultLeaves: policy.defaultPerMonth, carryForward, totalLeaves, usedLeaves, remainingLeaves };
+  }
+  return result;
+};
 
 exports.apply = async (req, res) => {
   try {
@@ -66,12 +131,24 @@ exports.apply = async (req, res) => {
     if (totalDays <= 0)
       return res.status(400).json({ success: false, message: 'Selected dates have no working days' });
 
-    const balanceMap = { annual: 'leave_annual', sick: 'leave_sick', casual: 'leave_casual', maternity: 'leave_maternity', unpaid: 'leave_unpaid' };
-    const balanceCol = balanceMap[leaveType];
-    if (balanceCol) {
-      const balance = parseFloat(empRes.rows[0][balanceCol]);
-      if (balance < totalDays)
-        return res.status(400).json({ success: false, message: `Insufficient ${leaveType} leave balance. Available: ${balance} days, Required: ${totalDays} days` });
+    // ── Balance check: legacy types use employee columns; CL/SL use monthly policy ──
+    if (['CL', 'SL'].includes(leaveType)) {
+      const leaveMonth = startDate.slice(0, 7); // YYYY-MM
+      const monthlyBal = await computeMonthlyBalance(employeeId, leaveMonth);
+      const avail = monthlyBal[leaveType]?.remainingLeaves ?? 0;
+      if (avail < totalDays)
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient ${leaveType} balance for ${leaveMonth}. Available: ${avail} day(s), Required: ${totalDays}`,
+        });
+    } else {
+      const balanceMap = { annual: 'leave_annual', sick: 'leave_sick', casual: 'leave_casual', maternity: 'leave_maternity', unpaid: 'leave_unpaid' };
+      const balanceCol = balanceMap[leaveType];
+      if (balanceCol) {
+        const balance = parseFloat(empRes.rows[0][balanceCol]);
+        if (balance < totalDays)
+          return res.status(400).json({ success: false, message: `Insufficient ${leaveType} leave balance. Available: ${balance} days, Required: ${totalDays} days` });
+      }
     }
 
     const r = await pool.query(
@@ -225,6 +302,34 @@ exports.cancel = async (req, res) => {
 
     await pool.query(`UPDATE leaves SET status='cancelled', updated_at=NOW() WHERE id=$1`, [req.params.id]);
     res.json({ success: true, message: 'Leave cancelled successfully' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// GET /leaves/monthly-balance/:id?month=YYYY-MM
+exports.getMonthlyBalance = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    const targetMonth  = (req.query.month || currentMonth).slice(0, 7);
+
+    if (!/^\d{4}-\d{2}$/.test(targetMonth))
+      return res.status(400).json({ success: false, message: 'Invalid month format. Use YYYY-MM' });
+
+    const empRes = await pool.query('SELECT id, first_name, last_name FROM employees WHERE id=$1', [id]);
+    if (!empRes.rows[0]) return res.status(404).json({ success: false, message: 'Employee not found' });
+
+    const balance = await computeMonthlyBalance(id, targetMonth);
+
+    res.json({
+      success: true,
+      data: {
+        month: targetMonth,
+        employee: { id, name: `${empRes.rows[0].first_name} ${empRes.rows[0].last_name || ''}`.trim() },
+        balance, // { CL: {...}, SL: {...} }
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

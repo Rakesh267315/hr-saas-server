@@ -257,6 +257,25 @@ const initDB = async () => {
     CREATE INDEX IF NOT EXISTS idx_notif_user     ON notifications(user_id, is_read);
     CREATE INDEX IF NOT EXISTS idx_notif_created  ON notifications(created_at DESC);
 
+    -- ── Monthly Leave Balances (CL / SL carry-forward) ───────────────────────
+    CREATE TABLE IF NOT EXISTS leave_monthly_balances (
+      id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      employee_id      UUID REFERENCES employees(id) ON DELETE CASCADE NOT NULL,
+      month            VARCHAR(7)  NOT NULL,          -- YYYY-MM
+      leave_type       VARCHAR(10) NOT NULL,          -- CL | SL
+      default_leaves   NUMERIC     DEFAULT 0,
+      carry_forward    NUMERIC     DEFAULT 0,
+      total_leaves     NUMERIC     DEFAULT 0,
+      used_leaves      NUMERIC     DEFAULT 0,
+      remaining_leaves NUMERIC     DEFAULT 0,
+      created_at       TIMESTAMPTZ DEFAULT NOW(),
+      updated_at       TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(employee_id, month, leave_type)
+    );
+    CREATE INDEX IF NOT EXISTS idx_lmb_emp_month ON leave_monthly_balances(employee_id, month);
+    CREATE INDEX IF NOT EXISTS idx_leaves_type   ON leaves(leave_type);
+    CREATE INDEX IF NOT EXISTS idx_leaves_emp_month ON leaves(employee_id, start_date);
+
     -- ── Performance Goals & Reviews ──────────────────────────────────────────
     CREATE TABLE IF NOT EXISTS performance_goals (
       id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
