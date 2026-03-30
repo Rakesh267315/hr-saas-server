@@ -37,16 +37,23 @@ exports.checkIn = async (req, res) => {
     const empRes = await pool.query('SELECT work_start_time FROM employees WHERE id=$1', [employeeId]);
     if (!empRes.rows[0]) return res.status(404).json({ success: false, message: 'Employee not found' });
 
-    const today = new Date().toISOString().split('T')[0];
+    const settings = await getSettings();
+    const tz = settings.timezone || 'Asia/Kolkata';
+
+    // Use company timezone for date + late calculation
+    const now = new Date();
+    const today = new Date(now.toLocaleString('en-US', { timeZone: tz }))
+      .toLocaleDateString('en-CA'); // YYYY-MM-DD in company timezone
+
     const existing = await pool.query('SELECT check_in FROM attendance WHERE employee_id=$1 AND date=$2', [employeeId, today]);
     if (existing.rows[0]?.check_in)
       return res.status(409).json({ success: false, message: 'Already checked in today' });
 
-    const settings = await getSettings();
-    const now = new Date();
+    // Compare times in company timezone (not UTC)
+    const nowInTZ = new Date(now.toLocaleString('en-US', { timeZone: tz }));
     const [h, m] = empRes.rows[0].work_start_time.split(':').map(Number);
-    const scheduled = new Date(now); scheduled.setHours(h, m, 0, 0);
-    const lateMinutes = Math.max(0, Math.round((now - scheduled) / 60000));
+    const scheduledInTZ = new Date(nowInTZ); scheduledInTZ.setHours(h, m, 0, 0);
+    const lateMinutes = Math.max(0, Math.round((nowInTZ - scheduledInTZ) / 60000));
     const status = resolveStatus(lateMinutes, settings);
 
     const r = await pool.query(
@@ -65,14 +72,16 @@ exports.checkIn = async (req, res) => {
 exports.checkOut = async (req, res) => {
   try {
     const { employeeId } = req.body;
-    const today = new Date().toISOString().split('T')[0];
+    const settings = await getSettings();
+    const tz = settings.timezone || 'Asia/Kolkata';
+    const today = new Date(new Date().toLocaleString('en-US', { timeZone: tz }))
+      .toLocaleDateString('en-CA');
     const att = await pool.query('SELECT * FROM attendance WHERE employee_id=$1 AND date=$2', [employeeId, today]);
     if (!att.rows[0] || !att.rows[0].check_in)
       return res.status(400).json({ success: false, message: 'No check-in found for today' });
     if (att.rows[0].check_out)
       return res.status(409).json({ success: false, message: 'Already checked out' });
 
-    const settings = await getSettings();
     const workHoursPerDay = 8; // standard full day
     const now = new Date();
     const workHours = (now - new Date(att.rows[0].check_in)) / 3600000;
@@ -142,7 +151,9 @@ exports.getSummary = async (req, res) => {
 
 exports.getToday = async (req, res) => {
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const settings = await getSettings();
+    const tz = settings.timezone || 'Asia/Kolkata';
+    const today = new Date(new Date().toLocaleString('en-US', { timeZone: tz })).toLocaleDateString('en-CA');
     const r = await pool.query(
       `SELECT a.*, e.first_name, e.last_name, e.employee_code, e.designation, e.department_id,
               d.name AS department_name
@@ -168,7 +179,9 @@ exports.getToday = async (req, res) => {
 exports.markAbsent = async (req, res) => {
   try {
     const { date } = req.body;
-    const targetDate = date || new Date().toISOString().split('T')[0];
+    const settings = await getSettings();
+    const tz = settings.timezone || 'Asia/Kolkata';
+    const targetDate = date || new Date(new Date().toLocaleString('en-US', { timeZone: tz })).toLocaleDateString('en-CA');
     const r = await pool.query(
       `INSERT INTO attendance (employee_id, date, status)
        SELECT id, $1, 'absent' FROM employees WHERE status='active'
@@ -267,11 +280,13 @@ exports.correctAttendance = async (req, res) => {
         [id]
       );
       if (attRow.rows[0]?.work_start_time) {
+        const settingsForTZ = await getSettings();
+        const tzForCorr = settingsForTZ.timezone || 'Asia/Kolkata';
         const checkInDate = new Date(checkIn);
+        const checkInInTZ = new Date(checkInDate.toLocaleString('en-US', { timeZone: tzForCorr }));
         const [h, m] = attRow.rows[0].work_start_time.split(':').map(Number);
-        const scheduled = new Date(checkInDate);
-        scheduled.setHours(h, m, 0, 0);
-        lateMinutes = Math.max(0, Math.round((checkInDate - scheduled) / 60000));
+        const scheduledInTZ = new Date(checkInInTZ); scheduledInTZ.setHours(h, m, 0, 0);
+        lateMinutes = Math.max(0, Math.round((checkInInTZ - scheduledInTZ) / 60000));
       }
     }
 

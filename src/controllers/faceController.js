@@ -155,7 +155,11 @@ exports.faceCheckin = async (req, res) => {
     }
 
     // ── Mark attendance ────────────────────────────────────────────────────
-    const today = new Date().toISOString().split('T')[0];
+    const settings = await getSettings();
+    const tz  = settings.timezone || 'Asia/Kolkata';
+    const now = new Date();
+    const today = new Date(now.toLocaleString('en-US', { timeZone: tz })).toLocaleDateString('en-CA');
+
     const existing = await pool.query(
       'SELECT check_in FROM attendance WHERE employee_id=$1 AND date=$2',
       [employeeId, today]
@@ -166,12 +170,11 @@ exports.faceCheckin = async (req, res) => {
       return res.status(409).json({ success: false, message: 'Already checked in today' });
     }
 
-    const settings = await getSettings();
-    const now = new Date();
+    // Compare times in company timezone to get accurate late minutes
+    const nowInTZ = new Date(now.toLocaleString('en-US', { timeZone: tz }));
     const [h, m] = (emp.work_start_time || '09:00').split(':').map(Number);
-    const scheduled = new Date(now);
-    scheduled.setHours(h, m, 0, 0);
-    const lateMinutes = Math.max(0, Math.round((now - scheduled) / 60000));
+    const scheduledInTZ = new Date(nowInTZ); scheduledInTZ.setHours(h, m, 0, 0);
+    const lateMinutes = Math.max(0, Math.round((nowInTZ - scheduledInTZ) / 60000));
     const attStatus = resolveStatus(lateMinutes, settings);
 
     const r = await pool.query(
@@ -244,7 +247,9 @@ exports.faceCheckout = async (req, res) => {
     }
 
     // ── Check today's attendance ──────────────────────────────────────────
-    const today = new Date().toISOString().split('T')[0];
+    const settingsF = await getSettings();
+    const tzF   = settingsF.timezone || 'Asia/Kolkata';
+    const today = new Date(new Date().toLocaleString('en-US', { timeZone: tzF })).toLocaleDateString('en-CA');
     const att   = await pool.query(
       'SELECT id, check_in, check_out FROM attendance WHERE employee_id=$1 AND date=$2',
       [employeeId, today]
@@ -260,11 +265,11 @@ exports.faceCheckout = async (req, res) => {
     const checkIn     = new Date(att.rows[0].check_in);
     const workHours   = parseFloat(((now - checkIn) / 3600000).toFixed(2));
 
-    // Overtime: hours beyond scheduled end time
-    const [eh, em]  = (emp.work_end_time || '18:00').split(':').map(Number);
-    const scheduled = new Date(now);
-    scheduled.setHours(eh, em, 0, 0);
-    const overtimeMins = Math.max(0, Math.round((now - scheduled) / 60000));
+    // Overtime: hours beyond scheduled end time (compare in company timezone)
+    const nowInTZF   = new Date(now.toLocaleString('en-US', { timeZone: tzF }));
+    const [eh, em]   = (emp.work_end_time || '18:00').split(':').map(Number);
+    const scheduledEnd = new Date(nowInTZF); scheduledEnd.setHours(eh, em, 0, 0);
+    const overtimeMins = Math.max(0, Math.round((nowInTZF - scheduledEnd) / 60000));
 
     const r = await pool.query(
       `UPDATE attendance
