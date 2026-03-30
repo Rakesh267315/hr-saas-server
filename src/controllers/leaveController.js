@@ -60,15 +60,20 @@ const computeMonthlyBalance = async (employeeId, month) => {
   const result = {};
 
   for (const [type, policy] of Object.entries(MONTHLY_POLICY)) {
-    // Count approved leaves of this type within the month
+    // Count both approved AND pending leaves — pending reserves the quota too
     const usedRes = await pool.query(
-      `SELECT COALESCE(SUM(total_days), 0) AS used
+      `SELECT
+         COALESCE(SUM(total_days) FILTER (WHERE status='approved'), 0) AS approved_days,
+         COALESCE(SUM(total_days) FILTER (WHERE status='pending'),  0) AS pending_days
        FROM leaves
-       WHERE employee_id=$1 AND leave_type=$2 AND status='approved'
+       WHERE employee_id=$1 AND leave_type=$2
+         AND status IN ('pending','approved')
          AND start_date >= $3 AND start_date <= $4`,
       [employeeId, type, monthStart, monthEnd]
     );
-    const usedLeaves = parseFloat(usedRes.rows[0].used);
+    const approvedDays = parseFloat(usedRes.rows[0].approved_days);
+    const pendingDays  = parseFloat(usedRes.rows[0].pending_days);
+    const usedLeaves   = approvedDays + pendingDays; // total consumed quota
 
     // Get carry-forward from previous month's remaining balance
     let carryForward = 0;
@@ -89,7 +94,7 @@ const computeMonthlyBalance = async (employeeId, month) => {
     const totalLeaves     = policy.defaultPerMonth + carryForward;
     const remainingLeaves = Math.max(0, totalLeaves - usedLeaves);
 
-    // Upsert cache
+    // Upsert cache row (recomputed on every read so always fresh)
     await pool.query(
       `INSERT INTO leave_monthly_balances
          (employee_id,month,leave_type,default_leaves,carry_forward,total_leaves,used_leaves,remaining_leaves)
@@ -99,8 +104,18 @@ const computeMonthlyBalance = async (employeeId, month) => {
          used_leaves=$7, remaining_leaves=$8, updated_at=NOW()`,
       [employeeId, month, type, policy.defaultPerMonth, carryForward, totalLeaves, usedLeaves, remainingLeaves]
     );
+    // Note: usedLeaves = approvedDays + pendingDays (so remaining reflects ALL consumed quota)
 
-    result[type] = { type, label: policy.label, defaultLeaves: policy.defaultPerMonth, carryForward, totalLeaves, usedLeaves, remainingLeaves };
+    result[type] = {
+      type, label: policy.label,
+      defaultLeaves: policy.defaultPerMonth,
+      carryForward,
+      totalLeaves,
+      usedLeaves,       // approved + pending combined
+      approvedLeaves: approvedDays,
+      pendingLeaves:  pendingDays,
+      remainingLeaves,
+    };
   }
   return result;
 };
