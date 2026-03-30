@@ -336,39 +336,51 @@ exports.correctAttendance = async (req, res) => {
   }
 };
 
-// POST /attendance/recalculate — fix late_minutes + status for all records on a date using IST
+// POST /attendance/recalculate — fix late_minutes + status for all records on a date using pure SQL AT TIME ZONE
 exports.recalculate = async (req, res) => {
   try {
     const settings = await getSettings();
     const tz = settings.timezone || 'Asia/Kolkata';
+    const grace     = settings.grace_period_minutes    ?? 15;
+    const halfDayAt = settings.half_day_after_minutes  ?? 240;
+    const absentAt  = settings.absent_after_minutes    ?? 480;
     const { date } = req.body;
-    const targetDate = date || new Date(new Date().toLocaleString('en-US', { timeZone: tz })).toLocaleDateString('en-CA');
 
-    // Fetch all check-in records for the date
-    const rows = await pool.query(
-      `SELECT a.id, a.check_in, e.work_start_time
-       FROM attendance a JOIN employees e ON e.id = a.employee_id
-       WHERE a.date = $1 AND a.check_in IS NOT NULL`,
-      [targetDate]
+    // Compute today's date in the company timezone entirely in SQL
+    const todayRes = await pool.query(`SELECT (NOW() AT TIME ZONE $1)::date::text AS today`, [tz]);
+    const targetDate = date || todayRes.rows[0].today;
+
+    // Pure SQL: convert check_in from UTC → company TZ, then diff against work_start_time on the same date
+    const r = await pool.query(
+      `WITH recalc AS (
+        SELECT
+          a.id,
+          GREATEST(0, ROUND(
+            EXTRACT(EPOCH FROM (
+              (a.check_in AT TIME ZONE 'UTC') AT TIME ZONE $2
+              - ($1::date + e.work_start_time::time)
+            )) / 60
+          ))::INTEGER AS late_min
+        FROM attendance a
+        JOIN employees e ON e.id = a.employee_id
+        WHERE a.date = $1 AND a.check_in IS NOT NULL
+      )
+      UPDATE attendance a
+      SET
+        late_minutes = recalc.late_min,
+        status = CASE
+          WHEN recalc.late_min <= $3 THEN 'present'
+          WHEN recalc.late_min <= $4 THEN 'late'
+          WHEN recalc.late_min <= $5 THEN 'half_day'
+          ELSE 'absent'
+        END,
+        updated_at = NOW()
+      FROM recalc
+      WHERE a.id = recalc.id`,
+      [targetDate, tz, grace, halfDayAt, absentAt]
     );
 
-    let updated = 0;
-    for (const row of rows.rows) {
-      const checkInUTC = new Date(row.check_in);
-      const checkInIST = new Date(checkInUTC.toLocaleString('en-US', { timeZone: tz }));
-      const [h, m] = (row.work_start_time || '09:00').split(':').map(Number);
-      const scheduled = new Date(checkInIST); scheduled.setHours(h, m, 0, 0);
-      const lateMinutes = Math.max(0, Math.round((checkInIST - scheduled) / 60000));
-      const status = resolveStatus(lateMinutes, settings);
-
-      await pool.query(
-        `UPDATE attendance SET late_minutes=$1, status=$2, updated_at=NOW() WHERE id=$3`,
-        [lateMinutes, status, row.id]
-      );
-      updated++;
-    }
-
-    res.json({ success: true, message: `Recalculated ${updated} records for ${targetDate}` });
+    res.json({ success: true, message: `Recalculated ${r.rowCount} records for ${targetDate}` });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
