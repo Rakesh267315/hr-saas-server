@@ -316,6 +316,44 @@ exports.correctAttendance = async (req, res) => {
   }
 };
 
+// POST /attendance/recalculate — fix late_minutes + status for all records on a date using IST
+exports.recalculate = async (req, res) => {
+  try {
+    const settings = await getSettings();
+    const tz = settings.timezone || 'Asia/Kolkata';
+    const { date } = req.body;
+    const targetDate = date || new Date(new Date().toLocaleString('en-US', { timeZone: tz })).toLocaleDateString('en-CA');
+
+    // Fetch all check-in records for the date
+    const rows = await pool.query(
+      `SELECT a.id, a.check_in, e.work_start_time
+       FROM attendance a JOIN employees e ON e.id = a.employee_id
+       WHERE a.date = $1 AND a.check_in IS NOT NULL`,
+      [targetDate]
+    );
+
+    let updated = 0;
+    for (const row of rows.rows) {
+      const checkInUTC = new Date(row.check_in);
+      const checkInIST = new Date(checkInUTC.toLocaleString('en-US', { timeZone: tz }));
+      const [h, m] = (row.work_start_time || '09:00').split(':').map(Number);
+      const scheduled = new Date(checkInIST); scheduled.setHours(h, m, 0, 0);
+      const lateMinutes = Math.max(0, Math.round((checkInIST - scheduled) / 60000));
+      const status = resolveStatus(lateMinutes, settings);
+
+      await pool.query(
+        `UPDATE attendance SET late_minutes=$1, status=$2, updated_at=NOW() WHERE id=$3`,
+        [lateMinutes, status, row.id]
+      );
+      updated++;
+    }
+
+    res.json({ success: true, message: `Recalculated ${updated} records for ${targetDate}` });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // PATCH /attendance/:id/unlock  — admin re-opens a checked-out day
 exports.unlockAttendance = async (req, res) => {
   try {
