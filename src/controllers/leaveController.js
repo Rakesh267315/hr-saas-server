@@ -3,8 +3,17 @@ const { eachDayOfInterval, isWeekend, isValid, parseISO } = require('date-fns');
 const { createNotification } = require('./notificationController');
 const { getSettings } = require('./settingsController');
 
-const countWorkdays = (start, end) =>
-  eachDayOfInterval({ start, end }).filter((d) => !isWeekend(d)).length;
+// Day-name → JS getDay() index
+const DAY_NUM = { Sunday:0, Monday:1, Tuesday:2, Wednesday:3, Thursday:4, Friday:5, Saturday:6 };
+
+// Count working days between two dates, skipping Saturday + company weekly off day
+const countWorkdays = (start, end, weeklyOffDay = 'Sunday') => {
+  const offDayNum = DAY_NUM[weeklyOffDay] ?? 0;
+  return eachDayOfInterval({ start, end }).filter((d) => {
+    const day = d.getDay();
+    return day !== 6 && day !== offDayNum; // skip Saturday + configured off day
+  }).length;
+};
 
 const fmtLeave = (l) => ({
   _id: l.id, id: l.id,
@@ -86,10 +95,25 @@ const computeMonthlyBalance = async (employeeId, month) => {
        WHERE employee_id=$1 AND month=$2 AND leave_type=$3`,
       [employeeId, prevMonth, type]
     );
+
     if (storedRes.rows[0]) {
+      // Stored balance found — use it
       carryForward = Math.min(parseFloat(storedRes.rows[0].remaining_leaves), policy.maxCarryForward);
+    } else {
+      // No stored balance for prev month — compute it on-the-fly (1 level deep, no recursion)
+      const [pY, pM] = prevMonth.split('-').map(Number);
+      const pStart = `${prevMonth}-01`;
+      const pEnd   = `${prevMonth}-${String(new Date(pY, pM, 0).getDate()).padStart(2, '0')}`;
+      const prevUsedRes = await pool.query(
+        `SELECT COALESCE(SUM(total_days) FILTER (WHERE status IN ('pending','approved')), 0) AS used
+         FROM leaves WHERE employee_id=$1 AND leave_type=$2 AND start_date >= $3 AND start_date <= $4`,
+        [employeeId, type, pStart, pEnd]
+      );
+      const prevUsed      = parseFloat(prevUsedRes.rows[0].used);
+      const prevTotal     = policy.defaultPerMonth; // no carry from before (bootstrap)
+      const prevRemaining = Math.max(0, prevTotal - prevUsed);
+      carryForward        = Math.min(prevRemaining, policy.maxCarryForward);
     }
-    // (No recursive back-fill to keep it simple and avoid infinite loops)
 
     const totalLeaves     = policy.defaultPerMonth + carryForward;
     const remainingLeaves = Math.max(0, totalLeaves - usedLeaves);
@@ -138,6 +162,13 @@ exports.apply = async (req, res) => {
     if (start > end)
       return res.status(400).json({ success: false, message: 'Start date cannot be after end date' });
 
+    // ── No retroactive leaves (past dates not allowed for new applications) ──
+    const settings = await getSettings();
+    const tz = settings.timezone || 'Asia/Kolkata';
+    const todayStr = new Date(new Date().toLocaleString('en-US', { timeZone: tz })).toLocaleDateString('en-CA');
+    if (startDate < todayStr)
+      return res.status(400).json({ success: false, message: `Cannot apply leave for past dates. Earliest allowed: ${todayStr}` });
+
     const empRes = await pool.query(
       `SELECT leave_annual,leave_sick,leave_casual,leave_maternity,leave_unpaid FROM employees WHERE id=$1`,
       [employeeId]
@@ -154,7 +185,7 @@ exports.apply = async (req, res) => {
     if (overlapRes.rows.length > 0)
       return res.status(409).json({ success: false, message: 'A leave request already exists for this date range' });
 
-    const totalDays = isHalfDay ? 0.5 : countWorkdays(start, end);
+    const totalDays = isHalfDay ? 0.5 : countWorkdays(start, end, settings.weekly_off_day || 'Sunday');
     if (totalDays <= 0)
       return res.status(400).json({ success: false, message: 'Selected dates have no working days' });
 
@@ -316,7 +347,7 @@ exports.cancel = async (req, res) => {
       // Revert attendance records back to absent for future dates only
       const today = new Date().toISOString().split('T')[0];
       const days = eachDayOfInterval({ start: new Date(leave.start_date), end: new Date(leave.end_date) })
-        .filter((d) => !isWeekend(d) && d.toISOString().split('T')[0] >= today);
+        .filter((d) => d.getDay() !== 6 && !isWeekend(d) && d.toISOString().split('T')[0] >= today);
       await Promise.all(days.map((day) => {
         const d = day.toISOString().split('T')[0];
         return pool.query(

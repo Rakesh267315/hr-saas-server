@@ -1,5 +1,13 @@
 const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+
+// Generate a cryptographically random temp password — never reuse hardcoded defaults
+const generateTempPassword = () => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789@#!';
+  const bytes = crypto.randomBytes(10);
+  return Array.from(bytes, (b) => chars[b % chars.length]).join('');
+};
 
 const fmtEmp = (e) => {
   if (!e) return null;
@@ -111,7 +119,7 @@ exports.create = async (req, res) => {
     if (department) await client.query(`UPDATE departments SET head_count=head_count+1 WHERE id=$1`, [department]);
 
     if (createAccount) {
-      const hashed = await bcrypt.hash(password || 'Hr@123456', 12);
+      const hashed = await bcrypt.hash(password || generateTempPassword(), 12);
       const userRes = await client.query(
         `INSERT INTO users (name,email,password,role,employee_id) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
         [`${firstName} ${lastName}`, email, hashed, role||'employee', emp.id]
