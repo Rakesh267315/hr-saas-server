@@ -152,7 +152,8 @@ exports.getSummary = async (req, res) => {
     r.rows.forEach((rec) => {
       if (['present', 'late'].includes(rec.status)) summary.present++;
       if (rec.status === 'absent') summary.absent++;
-      if (rec.status === 'late') summary.late++;
+      // Count as late if status='late' OR if late_minutes > grace (covers old records with status='present' but actual late minutes)
+      if (rec.status === 'late' || (rec.late_minutes > 0 && rec.status === 'present')) summary.late++;
       if (rec.status === 'half_day') summary.halfDay++;
       if (rec.status === 'on_leave') summary.onLeave++;
       summary.totalWorkHours += parseFloat(rec.work_hours) || 0;
