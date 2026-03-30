@@ -26,6 +26,7 @@ const fmt = (r) => {
     // Leave Policy
     monthlyLeaveLimit: r.monthly_leave_limit ?? 2,
     sickLeaveLimit: r.sick_leave_limit ?? 1,
+    casualLeaveLimit: r.casual_leave_limit ?? 2,
     leaveIsPaid: r.leave_is_paid ?? true,
     leaveApprovalRequired: r.leave_approval_required ?? true,
     // Policies
@@ -52,7 +53,7 @@ exports.update = async (req, res) => {
       gracePeriodMinutes, halfDayAfterMinutes, absentAfterMinutes,
       lateCountForHalfDay, overtimeMultiplier, hraPercent,
       transportAllowance, medicalAllowance, pfPercent, taxPercent, taxThreshold,
-      monthlyLeaveLimit, sickLeaveLimit, leaveIsPaid, leaveApprovalRequired,
+      monthlyLeaveLimit, sickLeaveLimit, casualLeaveLimit, leaveIsPaid, leaveApprovalRequired,
       companyPolicies,
     } = req.body;
 
@@ -61,8 +62,8 @@ exports.update = async (req, res) => {
         grace_period_minutes,half_day_after_minutes,absent_after_minutes,
         late_count_for_half_day,overtime_multiplier,hra_percent,transport_allowance,medical_allowance,
         pf_percent,tax_percent,tax_threshold,
-        monthly_leave_limit,sick_leave_limit,leave_is_paid,leave_approval_required,company_policies)
-       VALUES ('default',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+        monthly_leave_limit,sick_leave_limit,casual_leave_limit,leave_is_paid,leave_approval_required,company_policies)
+       VALUES ('default',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        ON CONFLICT (company_id) DO UPDATE SET
          company_name=COALESCE($1,company_settings.company_name),
          office_start_time=COALESCE($2,company_settings.office_start_time),
@@ -82,9 +83,10 @@ exports.update = async (req, res) => {
          tax_threshold=COALESCE($16,company_settings.tax_threshold),
          monthly_leave_limit=COALESCE($17,company_settings.monthly_leave_limit),
          sick_leave_limit=COALESCE($18,company_settings.sick_leave_limit),
-         leave_is_paid=COALESCE($19,company_settings.leave_is_paid),
-         leave_approval_required=COALESCE($20,company_settings.leave_approval_required),
-         company_policies=COALESCE($21,company_settings.company_policies),
+         casual_leave_limit=COALESCE($19,company_settings.casual_leave_limit),
+         leave_is_paid=COALESCE($20,company_settings.leave_is_paid),
+         leave_approval_required=COALESCE($21,company_settings.leave_approval_required),
+         company_policies=COALESCE($22,company_settings.company_policies),
          updated_at=NOW()
        RETURNING *`,
       [
@@ -92,7 +94,7 @@ exports.update = async (req, res) => {
         gracePeriodMinutes ?? null, halfDayAfterMinutes ?? null, absentAfterMinutes ?? null,
         lateCountForHalfDay ?? null, overtimeMultiplier ?? null, hraPercent ?? null,
         transportAllowance ?? null, medicalAllowance ?? null, pfPercent ?? null, taxPercent ?? null, taxThreshold ?? null,
-        monthlyLeaveLimit ?? null, sickLeaveLimit ?? null,
+        monthlyLeaveLimit ?? null, sickLeaveLimit ?? null, casualLeaveLimit ?? null,
         leaveIsPaid != null ? leaveIsPaid : null,
         leaveApprovalRequired != null ? leaveApprovalRequired : null,
         companyPolicies ?? null,

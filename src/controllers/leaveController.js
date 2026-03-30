@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const { eachDayOfInterval, isWeekend, isValid, parseISO } = require('date-fns');
 const { createNotification } = require('./notificationController');
+const { getSettings } = require('./settingsController');
 
 const countWorkdays = (start, end) =>
   eachDayOfInterval({ start, end }).filter((d) => !isWeekend(d)).length;
@@ -29,9 +30,19 @@ const leaveSelect = `
 const VALID_LEAVE_TYPES = ['annual', 'sick', 'casual', 'maternity', 'unpaid', 'CL', 'SL'];
 
 // ── Monthly Leave Policy (CL = Casual, SL = Sick) ─────────────────────────────
-const MONTHLY_POLICY = {
-  CL: { defaultPerMonth: 2, maxCarryForward: 6, label: 'Casual Leave' },
-  SL: { defaultPerMonth: 1, maxCarryForward: 6, label: 'Sick Leave' },
+// Defaults — overridden by company_settings at runtime
+const MONTHLY_POLICY_DEFAULTS = {
+  CL: { maxCarryForward: 6, label: 'Casual Leave' },
+  SL: { maxCarryForward: 6, label: 'Sick Leave' },
+};
+
+// Read live limits from company_settings (falls back to defaults)
+const getMonthlyPolicy = async () => {
+  const s = await getSettings();
+  return {
+    CL: { defaultPerMonth: s.casual_leave_limit ?? 2, maxCarryForward: 6, label: 'Casual Leave' },
+    SL: { defaultPerMonth: s.sick_leave_limit   ?? 1, maxCarryForward: 6, label: 'Sick Leave'   },
+  };
 };
 
 /**
@@ -45,6 +56,7 @@ const computeMonthlyBalance = async (employeeId, month) => {
   const monthStart = `${month}-01`;
   const lastDay = new Date(year, mon, 0).getDate(); // last day of month
   const monthEnd  = `${month}-${String(lastDay).padStart(2, '0')}`;
+  const MONTHLY_POLICY = await getMonthlyPolicy();
   const result = {};
 
   for (const [type, policy] of Object.entries(MONTHLY_POLICY)) {

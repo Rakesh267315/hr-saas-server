@@ -187,6 +187,7 @@ const initDB = async () => {
     ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS tax_threshold NUMERIC DEFAULT 50000;
     ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS monthly_leave_limit INTEGER DEFAULT 2;
     ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS sick_leave_limit INTEGER DEFAULT 1;
+    ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS casual_leave_limit INTEGER DEFAULT 2;
     ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS leave_is_paid BOOLEAN DEFAULT true;
     ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS leave_approval_required BOOLEAN DEFAULT true;
     ALTER TABLE company_settings ADD COLUMN IF NOT EXISTS company_policies TEXT DEFAULT '';
