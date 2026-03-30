@@ -181,10 +181,13 @@ exports.getToday = async (req, res) => {
       [today]
     );
     const records = r.rows.map(fmtAtt);
+    // Count late: status='late' OR (status='present' but late_minutes > grace_period)
+    // This handles legacy records that were saved before timezone fix
+    const gracePeriod = settings.grace_period_minutes ?? 15;
     const stats = {
       present: records.filter((r) => ['present', 'late'].includes(r.status)).length,
-      absent: records.filter((r) => r.status === 'absent').length,
-      late: records.filter((r) => r.status === 'late').length,
+      absent:  records.filter((r) => r.status === 'absent').length,
+      late:    records.filter((r) => r.status === 'late' || (r.lateMinutes > gracePeriod && r.status === 'present')).length,
       onLeave: records.filter((r) => r.status === 'on_leave').length,
     };
     res.json({ success: true, data: records, stats });
