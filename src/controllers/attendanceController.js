@@ -388,6 +388,125 @@ exports.recalculate = async (req, res) => {
   }
 };
 
+// POST /attendance/bulk-entry — admin manually enters attendance for all employees on a past date
+exports.bulkEntry = async (req, res) => {
+  try {
+    const { date, entries } = req.body;
+    if (!date) return res.status(400).json({ success: false, message: 'date is required' });
+    if (!Array.isArray(entries) || entries.length === 0)
+      return res.status(400).json({ success: false, message: 'entries array is required' });
+
+    const settings = await getSettings();
+    const tz = settings.timezone || 'Asia/Kolkata';
+
+    // Block future dates
+    const todayRes = await pool.query(`SELECT (NOW() AT TIME ZONE $1)::date::text AS t`, [tz]);
+    if (date > todayRes.rows[0].t)
+      return res.status(400).json({ success: false, message: `Cannot enter attendance for future dates. Today is ${todayRes.rows[0].t}` });
+
+    let created = 0, updated = 0;
+    const errors = [];
+
+    for (const entry of entries) {
+      const { employeeId, status, checkInTime, checkOutTime, notes } = entry;
+      if (!employeeId || !status) {
+        errors.push({ employeeId, error: 'employeeId and status are required' });
+        continue;
+      }
+      try {
+        const empRes = await pool.query(
+          'SELECT work_start_time FROM employees WHERE id=$1', [employeeId]
+        );
+        if (!empRes.rows[0]) { errors.push({ employeeId, error: 'Employee not found' }); continue; }
+
+        const workStart = empRes.rows[0].work_start_time || '10:00'; // "HH:MM:SS"
+
+        // Late minutes: pure time comparison (no timezone needed — both in local time)
+        let lateMinutes = 0;
+        if (checkInTime && !['absent', 'on_leave'].includes(status)) {
+          const [ch, cm] = checkInTime.split(':').map(Number);
+          const [wh, wm] = workStart.split(':').map(Number);
+          lateMinutes = Math.max(0, (ch * 60 + cm) - (wh * 60 + wm));
+        }
+
+        // Auto-resolve status from late minutes (only if time-based status)
+        const resolvedStatus = ['present', 'late', 'half_day'].includes(status)
+          ? resolveStatus(lateMinutes, settings)
+          : status;
+
+        // Convert HH:MM + date → UTC timestamptz via SQL AT TIME ZONE
+        // ($date::date + $time::time) AT TIME ZONE $tz → timestamptz in UTC
+        let checkInUTC = null, checkOutUTC = null;
+        if (checkInTime && !['absent', 'on_leave'].includes(status)) {
+          const r = await pool.query(
+            `SELECT ($1::date + $2::time) AT TIME ZONE $3 AS ts`,
+            [date, checkInTime, tz]
+          );
+          checkInUTC = r.rows[0].ts;
+        }
+        if (checkOutTime && !['absent', 'on_leave'].includes(status)) {
+          const r = await pool.query(
+            `SELECT ($1::date + $2::time) AT TIME ZONE $3 AS ts`,
+            [date, checkOutTime, tz]
+          );
+          checkOutUTC = r.rows[0].ts;
+        }
+
+        // Work hours from time difference
+        let workHours = null, overtimeMinutes = null;
+        if (checkInTime && checkOutTime && !['absent', 'on_leave'].includes(status)) {
+          const [ch, cm] = checkInTime.split(':').map(Number);
+          const [oh, om] = checkOutTime.split(':').map(Number);
+          const diff = Math.max(0, (oh * 60 + om) - (ch * 60 + cm)) / 60;
+          workHours = Math.round(diff * 100) / 100;
+          overtimeMinutes = workHours > 8 ? Math.round((workHours - 8) * 60) : 0;
+        }
+
+        const existing = await pool.query(
+          'SELECT id FROM attendance WHERE employee_id=$1 AND date=$2', [employeeId, date]
+        );
+
+        if (existing.rows[0]) {
+          await pool.query(
+            `UPDATE attendance SET
+               status=$1, check_in=$2, check_out=$3, late_minutes=$4,
+               work_hours=$5, overtime_minutes=$6, notes=$7,
+               edited_by=$8, edited_at=NOW(),
+               edit_reason='Admin backdate entry',
+               is_locked=true, updated_at=NOW()
+             WHERE employee_id=$9 AND date=$10`,
+            [resolvedStatus, checkInUTC, checkOutUTC, lateMinutes,
+             workHours, overtimeMinutes, notes || null,
+             req.user.id, employeeId, date]
+          );
+          updated++;
+        } else {
+          await pool.query(
+            `INSERT INTO attendance
+               (employee_id, date, status, check_in, check_out,
+                late_minutes, work_hours, overtime_minutes, notes,
+                edited_by, edited_at, edit_reason, is_locked)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),'Admin backdate entry',true)`,
+            [employeeId, date, resolvedStatus, checkInUTC, checkOutUTC,
+             lateMinutes, workHours, overtimeMinutes, notes || null, req.user.id]
+          );
+          created++;
+        }
+      } catch (e) {
+        errors.push({ employeeId, error: e.message });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Saved ${created + updated} record(s) for ${date} (${created} new, ${updated} updated)${errors.length ? `, ${errors.length} failed` : ''}`,
+      created, updated, total: created + updated, errors,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // POST /attendance/backfill — create missing attendance records for a date range
 exports.backfill = async (req, res) => {
   try {
