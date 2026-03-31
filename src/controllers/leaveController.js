@@ -393,6 +393,101 @@ exports.getMonthlyBalance = async (req, res) => {
   }
 };
 
+// POST /leaves/admin/manual — admin manually adds leave for one or all employees (bypasses past-date check)
+exports.adminAddLeave = async (req, res) => {
+  try {
+    const { employeeIds, leaveType, startDate, endDate, reason, isHalfDay } = req.body;
+
+    if (!VALID_LEAVE_TYPES.includes(leaveType))
+      return res.status(400).json({ success: false, message: `Invalid leave type. Must be one of: ${VALID_LEAVE_TYPES.join(', ')}` });
+    if (!startDate || !endDate)
+      return res.status(400).json({ success: false, message: 'Start date and end date are required' });
+
+    const start = parseISO(startDate);
+    const end   = parseISO(endDate);
+    if (!isValid(start) || !isValid(end))
+      return res.status(400).json({ success: false, message: 'Invalid date format. Use YYYY-MM-DD' });
+    if (start > end)
+      return res.status(400).json({ success: false, message: 'Start date cannot be after end date' });
+
+    const settings = await getSettings();
+
+    // Resolve employee list — 'all' or array of IDs
+    let empIds = [];
+    const isAll = employeeIds === 'all' || (Array.isArray(employeeIds) && employeeIds[0] === 'all');
+    if (isAll) {
+      const allEmps = await pool.query(`SELECT id FROM employees WHERE status='active'`);
+      empIds = allEmps.rows.map((r) => r.id);
+    } else {
+      empIds = Array.isArray(employeeIds) ? employeeIds : [employeeIds];
+    }
+    if (empIds.length === 0)
+      return res.status(400).json({ success: false, message: 'No employees selected' });
+
+    const totalDays = isHalfDay ? 0.5 : countWorkdays(start, end, settings.weekly_off_day || 'Sunday');
+    if (totalDays <= 0)
+      return res.status(400).json({ success: false, message: 'No working days in the selected date range' });
+
+    // Working days in the range (for attendance marking)
+    const offDayNum = DAY_NUM[settings.weekly_off_day || 'Sunday'] ?? 0;
+    const workingDays = eachDayOfInterval({ start, end }).filter((d) => {
+      const day = d.getDay();
+      return day !== 6 && day !== offDayNum;
+    });
+
+    const created = [];
+    const skipped = [];
+
+    for (const empId of empIds) {
+      try {
+        // Skip if overlapping leave already exists
+        const overlap = await pool.query(
+          `SELECT id FROM leaves WHERE employee_id=$1 AND status NOT IN ('cancelled','rejected')
+           AND start_date <= $3 AND end_date >= $2`,
+          [empId, startDate, endDate]
+        );
+        if (overlap.rows.length > 0) {
+          skipped.push({ empId, reason: 'Overlapping leave exists' });
+          continue;
+        }
+
+        // Insert leave as already approved (admin override)
+        const r = await pool.query(
+          `INSERT INTO leaves
+             (employee_id, leave_type, start_date, end_date, total_days, reason, is_half_day, status, approved_by, approved_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'approved',$8,NOW()) RETURNING id`,
+          [empId, leaveType, startDate, endDate, totalDays,
+           reason?.trim() || 'Admin manual entry', isHalfDay || false, req.user.id]
+        );
+
+        // Mark attendance as on_leave for working days
+        await Promise.all(workingDays.map((day) => {
+          const d = day.toISOString().split('T')[0];
+          return pool.query(
+            `INSERT INTO attendance (employee_id, date, status) VALUES ($1,$2,'on_leave')
+             ON CONFLICT (employee_id, date) DO UPDATE SET status='on_leave', updated_at=NOW()`,
+            [empId, d]
+          );
+        }));
+
+        created.push(r.rows[0].id);
+      } catch (e) {
+        skipped.push({ empId, reason: e.message });
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Created ${created.length} leave record(s)${skipped.length ? `, ${skipped.length} skipped (overlapping or error)` : ''}`,
+      created: created.length,
+      skipped: skipped.length,
+      details: skipped,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 exports.getBalance = async (req, res) => {
   try {
     const r = await pool.query(

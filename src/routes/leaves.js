@@ -7,6 +7,7 @@ router.use(authenticate);
 router.get('/', ctrl.getAll);
 router.get('/:id', ctrl.getOne);
 router.post('/', ctrl.apply);
+router.post('/admin/manual', authorize('admin', 'hr', 'super_admin'), ctrl.adminAddLeave);
 router.patch('/:id/status', authorize('admin', 'hr', 'super_admin'), ctrl.updateStatus);
 router.patch('/:id/cancel', ctrl.cancel);
 router.get('/balance/:id', ctrl.getBalance);
