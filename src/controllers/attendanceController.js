@@ -338,24 +338,28 @@ exports.correctAttendance = async (req, res) => {
 exports.recalculate = async (req, res) => {
   try {
     const settings = await getSettings();
-    const tz = settings.timezone || 'Asia/Kolkata';
-    const grace     = settings.gracePeriodMinutes    ?? settings.grace_period_minutes    ?? 15;
-    const halfDayAt = settings.halfDayAfterMinutes   ?? settings.half_day_after_minutes  ?? 240;
-    const absentAt  = settings.absentAfterMinutes    ?? settings.absent_after_minutes    ?? 480;
+    // getSettings() returns raw DB row — use snake_case keys directly
+    const tz        = settings.timezone              || 'Asia/Kolkata';
+    const grace     = settings.grace_period_minutes  ?? 15;
+    const halfDayAt = settings.half_day_after_minutes ?? 240;
+    const absentAt  = settings.absent_after_minutes  ?? 480;
     const { date } = req.body;
 
     // Compute today's date in the company timezone entirely in SQL
     const todayRes = await pool.query(`SELECT (NOW() AT TIME ZONE $1)::date::text AS today`, [tz]);
     const targetDate = date || todayRes.rows[0].today;
 
-    // Pure SQL: convert check_in from UTC → company TZ, then diff against work_start_time on the same date
+    // Pure SQL: a.check_in is timestamptz stored in UTC.
+    // AT TIME ZONE $2 converts it directly to a local timestamp in the company timezone.
+    // ($1::date + e.work_start_time::time) builds the scheduled start as a local timestamp.
+    // Subtracting the two gives the exact number of minutes late.
     const r = await pool.query(
       `WITH recalc AS (
         SELECT
           a.id,
           GREATEST(0, ROUND(
             EXTRACT(EPOCH FROM (
-              (a.check_in AT TIME ZONE 'UTC') AT TIME ZONE $2
+              (a.check_in AT TIME ZONE $2)
               - ($1::date + e.work_start_time::time)
             )) / 60
           ))::INTEGER AS late_min
