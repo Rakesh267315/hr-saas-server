@@ -12,6 +12,7 @@ router.get('/employee/:id',         ctrl.getByEmployee);
 router.get('/employee/:id/summary', ctrl.getSummary);
 router.post('/mark-absent',         authorize('admin', 'hr', 'super_admin'), ctrl.markAbsent);
 router.post('/recalculate',         authorize('admin', 'hr', 'super_admin'), ctrl.recalculate);
+router.post('/backfill',            authorize('admin', 'hr', 'super_admin'), ctrl.backfill);
 router.patch('/:id/correct',        authorize('admin', 'hr', 'super_admin'), ctrl.correctAttendance);
 router.patch('/:id/unlock',         authorize('admin', 'hr', 'super_admin'), ctrl.unlockAttendance);
 

@@ -388,6 +388,76 @@ exports.recalculate = async (req, res) => {
   }
 };
 
+// POST /attendance/backfill — create missing attendance records for a date range
+exports.backfill = async (req, res) => {
+  try {
+    const { fromDate, toDate, status = 'absent', employeeIds } = req.body;
+
+    if (!fromDate || !toDate)
+      return res.status(400).json({ success: false, message: 'fromDate and toDate are required' });
+    if (fromDate > toDate)
+      return res.status(400).json({ success: false, message: 'fromDate must be before toDate' });
+
+    const settings = await getSettings();
+    const tz         = settings.timezone       || 'Asia/Kolkata';
+    const weeklyOff  = settings.weekly_off_day || 'Sunday';
+
+    // Today in company timezone — block future dates
+    const todayRes = await pool.query(`SELECT (NOW() AT TIME ZONE $1)::date::text AS t`, [tz]);
+    const todayStr = todayRes.rows[0].t;
+    if (toDate > todayStr)
+      return res.status(400).json({ success: false, message: `Cannot backfill future dates. Latest allowed: ${todayStr}` });
+
+    // Build list of working days in range (skip Saturday + weekly off day)
+    const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    const offDayNum = DAY_NAMES.indexOf(weeklyOff); // 0=Sun,1=Mon,...
+    const dates = [];
+    let cur = new Date(fromDate + 'T00:00:00Z');
+    const end = new Date(toDate + 'T00:00:00Z');
+    while (cur <= end) {
+      const dow = cur.getUTCDay();
+      if (dow !== 6 && dow !== offDayNum) dates.push(cur.toISOString().split('T')[0]);
+      cur.setUTCDate(cur.getUTCDate() + 1);
+    }
+    if (dates.length === 0)
+      return res.status(400).json({ success: false, message: 'No working days in selected date range' });
+
+    // Resolve employee list
+    let empIds = [];
+    if (!employeeIds || employeeIds === 'all' ||
+        (Array.isArray(employeeIds) && employeeIds.length === 0)) {
+      const r = await pool.query(`SELECT id FROM employees WHERE status='active'`);
+      empIds = r.rows.map((row) => row.id);
+    } else {
+      empIds = Array.isArray(employeeIds) ? employeeIds : [employeeIds];
+    }
+    if (empIds.length === 0)
+      return res.status(400).json({ success: false, message: 'No active employees found' });
+
+    // Bulk insert per date — ON CONFLICT DO NOTHING skips existing records
+    let created = 0;
+    let skipped = 0;
+    for (const d of dates) {
+      const r = await pool.query(
+        `INSERT INTO attendance (employee_id, date, status)
+         SELECT unnest($1::uuid[]), $2::date, $3
+         ON CONFLICT (employee_id, date) DO NOTHING`,
+        [empIds, d, status]
+      );
+      created += r.rowCount;
+      skipped += empIds.length - r.rowCount;
+    }
+
+    res.json({
+      success: true,
+      message: `Backfilled ${created} record(s) across ${dates.length} working day(s). ${skipped} already existed — skipped.`,
+      created, skipped, workingDays: dates.length, employees: empIds.length,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // PATCH /attendance/:id/unlock  — admin re-opens a checked-out day
 exports.unlockAttendance = async (req, res) => {
   try {
