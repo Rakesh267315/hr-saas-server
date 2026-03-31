@@ -534,13 +534,13 @@ exports.adminAddLeave = async (req, res) => {
     if (empIds.length === 0)
       return res.status(400).json({ success: false, message: 'No employees selected' });
 
-    const totalDays = isHalfDay ? 0.5 : countWorkdays(start, end, settings.weekly_off_day || 'Sunday');
-    if (totalDays <= 0)
-      return res.status(400).json({ success: false, message: 'No working days in the selected date range' });
+    // Admin override: count all calendar days (incl. weekends) so single-day entries on off-days work
+    const allDays     = eachDayOfInterval({ start, end });
+    const totalDays   = isHalfDay ? 0.5 : allDays.length;
 
-    // Working days in the range (for attendance marking)
-    const offDayNum = DAY_NUM[settings.weekly_off_day || 'Sunday'] ?? 0;
-    const workingDays = eachDayOfInterval({ start, end }).filter((d) => {
+    // For attendance marking we still only mark actual working days as on_leave
+    const offDayNum   = DAY_NUM[settings.weekly_off_day || 'Sunday'] ?? 0;
+    const workingDays = allDays.filter((d) => {
       const day = d.getDay();
       return day !== 6 && day !== offDayNum;
     });
