@@ -20,14 +20,15 @@ const fmtAtt = (r) => {
 };
 
 // Determine attendance status from late minutes using company settings
+// getSettings() returns camelCase keys — support both for safety
 const resolveStatus = (lateMinutes, settings) => {
-  const grace = settings.grace_period_minutes ?? 15;
-  const halfDayAt = settings.half_day_after_minutes ?? 240;
-  const absentAt = settings.absent_after_minutes ?? 480;
+  const grace     = settings.gracePeriodMinutes    ?? settings.grace_period_minutes    ?? 15;
+  const halfDayAt = settings.halfDayAfterMinutes   ?? settings.half_day_after_minutes  ?? 240;
+  const absentAt  = settings.absentAfterMinutes    ?? settings.absent_after_minutes    ?? 480;
 
-  if (lateMinutes <= grace) return 'present';
+  if (lateMinutes <= grace)     return 'present';
   if (lateMinutes <= halfDayAt) return 'late';
-  if (lateMinutes <= absentAt) return 'half_day';
+  if (lateMinutes <= absentAt)  return 'half_day';
   return 'absent';
 };
 
@@ -338,9 +339,9 @@ exports.recalculate = async (req, res) => {
   try {
     const settings = await getSettings();
     const tz = settings.timezone || 'Asia/Kolkata';
-    const grace     = settings.grace_period_minutes    ?? 15;
-    const halfDayAt = settings.half_day_after_minutes  ?? 240;
-    const absentAt  = settings.absent_after_minutes    ?? 480;
+    const grace     = settings.gracePeriodMinutes    ?? settings.grace_period_minutes    ?? 15;
+    const halfDayAt = settings.halfDayAfterMinutes   ?? settings.half_day_after_minutes  ?? 240;
+    const absentAt  = settings.absentAfterMinutes    ?? settings.absent_after_minutes    ?? 480;
     const { date } = req.body;
 
     // Compute today's date in the company timezone entirely in SQL
