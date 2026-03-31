@@ -279,6 +279,21 @@ const initDB = async () => {
     CREATE INDEX IF NOT EXISTS idx_leaves_type   ON leaves(leave_type);
     CREATE INDEX IF NOT EXISTS idx_leaves_emp_month ON leaves(employee_id, start_date);
 
+    -- ── Leave Overrides (Manager/Admin custom quota per employee per month) ───
+    CREATE TABLE IF NOT EXISTS leave_overrides (
+      id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      employee_id         UUID REFERENCES employees(id) ON DELETE CASCADE NOT NULL,
+      month               VARCHAR(7)   NOT NULL,           -- YYYY-MM
+      leave_type          VARCHAR(10)  NOT NULL CHECK (leave_type IN ('CL','SL')),
+      custom_total_leaves NUMERIC(5,1) NOT NULL CHECK (custom_total_leaves >= 0),
+      notes               TEXT,
+      set_by              UUID REFERENCES users(id),
+      created_at          TIMESTAMPTZ  DEFAULT NOW(),
+      updated_at          TIMESTAMPTZ  DEFAULT NOW(),
+      UNIQUE(employee_id, month, leave_type)
+    );
+    CREATE INDEX IF NOT EXISTS idx_leave_overrides_emp_month ON leave_overrides(employee_id, month);
+
     -- ── Performance Goals & Reviews ──────────────────────────────────────────
     CREATE TABLE IF NOT EXISTS performance_goals (
       id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),

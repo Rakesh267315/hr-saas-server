@@ -55,21 +55,31 @@ const getMonthlyPolicy = async () => {
 };
 
 /**
- * Recursively compute monthly leave balance for CL + SL.
- * Upserts result into leave_monthly_balances for caching.
+ * Compute monthly leave balance for CL + SL.
+ * Priority: admin override > default + carry-forward
+ * used_leaves = only APPROVED leaves (pending shown separately, does not block remaining)
  * @param {string} employeeId
  * @param {string} month  - format YYYY-MM
  */
 const computeMonthlyBalance = async (employeeId, month) => {
   const [year, mon] = month.split('-').map(Number);
-  const monthStart = `${month}-01`;
-  const lastDay = new Date(year, mon, 0).getDate(); // last day of month
-  const monthEnd  = `${month}-${String(lastDay).padStart(2, '0')}`;
+  const monthStart  = `${month}-01`;
+  const lastDay     = new Date(year, mon, 0).getDate();
+  const monthEnd    = `${month}-${String(lastDay).padStart(2, '0')}`;
   const MONTHLY_POLICY = await getMonthlyPolicy();
   const result = {};
 
   for (const [type, policy] of Object.entries(MONTHLY_POLICY)) {
-    // Count both approved AND pending leaves — pending reserves the quota too
+    // ── 1. Check admin / manager override for this employee + month ──────────
+    const overrideRes = await pool.query(
+      `SELECT custom_total_leaves, notes FROM leave_overrides
+       WHERE employee_id=$1 AND month=$2 AND leave_type=$3`,
+      [employeeId, month, type]
+    );
+    const hasOverride  = overrideRes.rows.length > 0;
+    const customTotal  = hasOverride ? parseFloat(overrideRes.rows[0].custom_total_leaves) : null;
+
+    // ── 2. Count approved + pending separately (for display) ─────────────────
     const usedRes = await pool.query(
       `SELECT
          COALESCE(SUM(total_days) FILTER (WHERE status='approved'), 0) AS approved_days,
@@ -82,43 +92,50 @@ const computeMonthlyBalance = async (employeeId, month) => {
     );
     const approvedDays = parseFloat(usedRes.rows[0].approved_days);
     const pendingDays  = parseFloat(usedRes.rows[0].pending_days);
-    const usedLeaves   = approvedDays + pendingDays; // total consumed quota
+    // used = only approved (pending does NOT deduct remaining)
+    const usedLeaves   = approvedDays;
 
-    // Get carry-forward from previous month's remaining balance
+    // ── 3. Compute total based on override or default + carry-forward ─────────
     let carryForward = 0;
-    const prevDate  = new Date(year, mon - 2, 1); // mon-2 because months are 0-indexed
-    const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+    let totalLeaves;
 
-    // Only carry forward if we're past the first ever month
-    const storedRes = await pool.query(
-      `SELECT remaining_leaves FROM leave_monthly_balances
-       WHERE employee_id=$1 AND month=$2 AND leave_type=$3`,
-      [employeeId, prevMonth, type]
-    );
-
-    if (storedRes.rows[0]) {
-      // Stored balance found — use it
-      carryForward = Math.min(parseFloat(storedRes.rows[0].remaining_leaves), policy.maxCarryForward);
+    if (hasOverride) {
+      // Override takes full priority — carry-forward is irrelevant
+      totalLeaves  = customTotal;
+      carryForward = 0;
     } else {
-      // No stored balance for prev month — compute it on-the-fly (1 level deep, no recursion)
-      const [pY, pM] = prevMonth.split('-').map(Number);
-      const pStart = `${prevMonth}-01`;
-      const pEnd   = `${prevMonth}-${String(new Date(pY, pM, 0).getDate()).padStart(2, '0')}`;
-      const prevUsedRes = await pool.query(
-        `SELECT COALESCE(SUM(total_days) FILTER (WHERE status IN ('pending','approved')), 0) AS used
-         FROM leaves WHERE employee_id=$1 AND leave_type=$2 AND start_date >= $3 AND start_date <= $4`,
-        [employeeId, type, pStart, pEnd]
+      // Normal path: default + carry-forward from previous month
+      const prevDate  = new Date(year, mon - 2, 1);
+      const prevMonth = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+
+      const storedRes = await pool.query(
+        `SELECT remaining_leaves FROM leave_monthly_balances
+         WHERE employee_id=$1 AND month=$2 AND leave_type=$3`,
+        [employeeId, prevMonth, type]
       );
-      const prevUsed      = parseFloat(prevUsedRes.rows[0].used);
-      const prevTotal     = policy.defaultPerMonth; // no carry from before (bootstrap)
-      const prevRemaining = Math.max(0, prevTotal - prevUsed);
-      carryForward        = Math.min(prevRemaining, policy.maxCarryForward);
+      if (storedRes.rows[0]) {
+        carryForward = Math.min(parseFloat(storedRes.rows[0].remaining_leaves), policy.maxCarryForward);
+      } else {
+        // Bootstrap previous month on-the-fly (1 level, no recursion)
+        const [pY, pM] = prevMonth.split('-').map(Number);
+        const pStart   = `${prevMonth}-01`;
+        const pEnd     = `${prevMonth}-${String(new Date(pY, pM, 0).getDate()).padStart(2, '0')}`;
+        const prevUsedRes = await pool.query(
+          `SELECT COALESCE(SUM(total_days) FILTER (WHERE status='approved'), 0) AS used
+           FROM leaves WHERE employee_id=$1 AND leave_type=$2 AND start_date >= $3 AND start_date <= $4`,
+          [employeeId, type, pStart, pEnd]
+        );
+        const prevUsed      = parseFloat(prevUsedRes.rows[0].used);
+        const prevRemaining = Math.max(0, policy.defaultPerMonth - prevUsed);
+        carryForward        = Math.min(prevRemaining, policy.maxCarryForward);
+      }
+      totalLeaves = policy.defaultPerMonth + carryForward;
     }
 
-    const totalLeaves     = policy.defaultPerMonth + carryForward;
+    // ── 4. Remaining = total - used (approved only), capped at 0 ─────────────
     const remainingLeaves = Math.max(0, totalLeaves - usedLeaves);
 
-    // Upsert cache row (recomputed on every read so always fresh)
+    // ── 5. Upsert cache ───────────────────────────────────────────────────────
     await pool.query(
       `INSERT INTO leave_monthly_balances
          (employee_id,month,leave_type,default_leaves,carry_forward,total_leaves,used_leaves,remaining_leaves)
@@ -126,19 +143,20 @@ const computeMonthlyBalance = async (employeeId, month) => {
        ON CONFLICT (employee_id,month,leave_type) DO UPDATE SET
          default_leaves=$4, carry_forward=$5, total_leaves=$6,
          used_leaves=$7, remaining_leaves=$8, updated_at=NOW()`,
-      [employeeId, month, type, policy.defaultPerMonth, carryForward, totalLeaves, usedLeaves, remainingLeaves]
+      [employeeId, month, type, hasOverride ? 0 : policy.defaultPerMonth, carryForward, totalLeaves, usedLeaves, remainingLeaves]
     );
-    // Note: usedLeaves = approvedDays + pendingDays (so remaining reflects ALL consumed quota)
 
     result[type] = {
       type, label: policy.label,
-      defaultLeaves: policy.defaultPerMonth,
+      defaultLeaves: hasOverride ? 0 : policy.defaultPerMonth,
       carryForward,
       totalLeaves,
-      usedLeaves,       // approved + pending combined
+      usedLeaves,          // approved only
       approvedLeaves: approvedDays,
       pendingLeaves:  pendingDays,
       remainingLeaves,
+      isOverridden: hasOverride,
+      overrideNotes: hasOverride ? overrideRes.rows[0].notes : null,
     };
   }
   return result;
@@ -388,6 +406,98 @@ exports.getMonthlyBalance = async (req, res) => {
         balance, // { CL: {...}, SL: {...} }
       },
     });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ── Leave Override CRUD (admin / manager set custom quota) ────────────────────
+
+// POST /leaves/override — set or update custom leave quota for an employee + month
+exports.setOverride = async (req, res) => {
+  try {
+    const { employeeId, month, leaveType, customTotalLeaves, notes } = req.body;
+
+    if (!employeeId) return res.status(400).json({ success: false, message: 'employeeId required' });
+    if (!month || !/^\d{4}-\d{2}$/.test(month))
+      return res.status(400).json({ success: false, message: 'month must be YYYY-MM' });
+    if (!['CL', 'SL'].includes(leaveType))
+      return res.status(400).json({ success: false, message: 'leaveType must be CL or SL' });
+    if (customTotalLeaves === undefined || customTotalLeaves === null || isNaN(Number(customTotalLeaves)) || Number(customTotalLeaves) < 0)
+      return res.status(400).json({ success: false, message: 'customTotalLeaves must be >= 0' });
+
+    const empRes = await pool.query('SELECT id, first_name, last_name FROM employees WHERE id=$1', [employeeId]);
+    if (!empRes.rows[0]) return res.status(404).json({ success: false, message: 'Employee not found' });
+
+    const r = await pool.query(
+      `INSERT INTO leave_overrides (employee_id, month, leave_type, custom_total_leaves, notes, set_by)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (employee_id, month, leave_type) DO UPDATE SET
+         custom_total_leaves=$4, notes=$5, set_by=$6, updated_at=NOW()
+       RETURNING *`,
+      [employeeId, month, leaveType, Number(customTotalLeaves), notes?.trim() || null, req.user.id]
+    );
+
+    // Invalidate cached balance so next fetch recomputes
+    await pool.query(
+      `DELETE FROM leave_monthly_balances WHERE employee_id=$1 AND month=$2 AND leave_type=$3`,
+      [employeeId, month, leaveType]
+    );
+
+    const emp = empRes.rows[0];
+    res.json({
+      success: true,
+      message: `Override set: ${emp.first_name} ${emp.last_name || ''} — ${leaveType} for ${month} = ${customTotalLeaves} day(s)`,
+      data: r.rows[0],
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// GET /leaves/overrides?month=&employeeId= — list overrides (admin/hr)
+exports.getOverrides = async (req, res) => {
+  try {
+    const { month, employeeId } = req.query;
+    const conditions = []; const params = [];
+    if (month)      { params.push(month);      conditions.push(`lo.month=$${params.length}`); }
+    if (employeeId) { params.push(employeeId); conditions.push(`lo.employee_id=$${params.length}`); }
+    const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+    const r = await pool.query(
+      `SELECT lo.*,
+              e.first_name, e.last_name, e.employee_code,
+              u.name AS set_by_name
+       FROM leave_overrides lo
+       JOIN employees e ON e.id = lo.employee_id
+       LEFT JOIN users u ON u.id = lo.set_by
+       ${where}
+       ORDER BY lo.month DESC, e.first_name`,
+      params
+    );
+    res.json({ success: true, data: r.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// DELETE /leaves/override/:id — remove override
+exports.deleteOverride = async (req, res) => {
+  try {
+    const r = await pool.query(
+      'DELETE FROM leave_overrides WHERE id=$1 RETURNING employee_id, month, leave_type',
+      [req.params.id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ success: false, message: 'Override not found' });
+
+    // Invalidate cache
+    const { employee_id, month, leave_type } = r.rows[0];
+    await pool.query(
+      'DELETE FROM leave_monthly_balances WHERE employee_id=$1 AND month=$2 AND leave_type=$3',
+      [employee_id, month, leave_type]
+    );
+
+    res.json({ success: true, message: 'Override removed — balance reverts to default + carry-forward' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
