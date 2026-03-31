@@ -117,16 +117,29 @@ const computeMonthlyBalance = async (employeeId, month) => {
         carryForward = Math.min(parseFloat(storedRes.rows[0].remaining_leaves), policy.maxCarryForward);
       } else {
         // Bootstrap previous month on-the-fly (1 level, no recursion)
+        // Also respect any override that existed for prev month
         const [pY, pM] = prevMonth.split('-').map(Number);
         const pStart   = `${prevMonth}-01`;
         const pEnd     = `${prevMonth}-${String(new Date(pY, pM, 0).getDate()).padStart(2, '0')}`;
-        const prevUsedRes = await pool.query(
-          `SELECT COALESCE(SUM(total_days) FILTER (WHERE status='approved'), 0) AS used
-           FROM leaves WHERE employee_id=$1 AND leave_type=$2 AND start_date >= $3 AND start_date <= $4`,
-          [employeeId, type, pStart, pEnd]
-        );
-        const prevUsed      = parseFloat(prevUsedRes.rows[0].used);
-        const prevRemaining = Math.max(0, policy.defaultPerMonth - prevUsed);
+
+        const [prevUsedRes, prevOverrideRes] = await Promise.all([
+          pool.query(
+            `SELECT COALESCE(SUM(total_days) FILTER (WHERE status='approved'), 0) AS used
+             FROM leaves WHERE employee_id=$1 AND leave_type=$2 AND start_date >= $3 AND start_date <= $4`,
+            [employeeId, type, pStart, pEnd]
+          ),
+          pool.query(
+            `SELECT custom_total_leaves FROM leave_overrides
+             WHERE employee_id=$1 AND month=$2 AND leave_type=$3`,
+            [employeeId, prevMonth, type]
+          ),
+        ]);
+        const prevUsed    = parseFloat(prevUsedRes.rows[0].used);
+        // If prev month had an override, use that as the total; otherwise use default
+        const prevTotal   = prevOverrideRes.rows[0]
+          ? parseFloat(prevOverrideRes.rows[0].custom_total_leaves)
+          : policy.defaultPerMonth;
+        const prevRemaining = Math.max(0, prevTotal - prevUsed);
         carryForward        = Math.min(prevRemaining, policy.maxCarryForward);
       }
       totalLeaves = policy.defaultPerMonth + carryForward;
