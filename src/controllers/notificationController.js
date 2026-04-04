@@ -80,3 +80,60 @@ exports.clearAll = async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 };
+
+// ── POST /notifications/send-voice — Admin sends voice message to employee ────
+exports.sendVoiceMessage = async (req, res) => {
+  try {
+    const { employeeId, message } = req.body;
+    if (!employeeId || !message?.trim())
+      return res.status(400).json({ success: false, message: 'employeeId and message are required' });
+
+    const senderName = req.user.name || 'Admin';
+
+    // Get the user_id linked to this employee
+    const empRow = await pool.query(
+      `SELECT e.id, e.first_name, e.last_name, e.user_id
+       FROM employees e WHERE e.id=$1`,
+      [employeeId]
+    );
+    if (!empRow.rows[0])
+      return res.status(404).json({ success: false, message: 'Employee not found' });
+
+    const emp = empRow.rows[0];
+    if (!emp.user_id)
+      return res.status(400).json({ success: false, message: 'Employee has no linked user account' });
+
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, title, message, link)
+       VALUES ($1, 'voice_message', $2, $3, NULL)`,
+      [
+        emp.user_id,
+        `Voice message from ${senderName}`,
+        message.trim(),
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: `Voice message sent to ${emp.first_name} ${emp.last_name}`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ── GET /notifications/voice-messages — Employee fetches unread voice msgs ────
+exports.getVoiceMessages = async (req, res) => {
+  try {
+    const rows = await pool.query(
+      `SELECT id, title, message, created_at
+       FROM notifications
+       WHERE user_id=$1 AND type='voice_message' AND is_read=false
+       ORDER BY created_at ASC`,
+      [req.user.id]
+    );
+    res.json({ success: true, data: rows.rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
