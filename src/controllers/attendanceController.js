@@ -600,3 +600,28 @@ exports.unlockAttendance = async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 };
+
+// DELETE /attendance/:id/reset — admin fully resets a day's attendance record
+exports.resetAttendance = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Delete the attendance row completely so employee can check in fresh
+    const r = await pool.query(
+      `DELETE FROM attendance WHERE id=$1 RETURNING *`,
+      [id]
+    );
+    if (!r.rows[0])
+      return res.status(404).json({ success: false, message: 'Attendance record not found' });
+
+    // Also delete any breaks linked to this attendance
+    await pool.query(
+      `DELETE FROM breaks WHERE employee_id=$1 AND DATE(start_time)=DATE($2)`,
+      [r.rows[0].employee_id, r.rows[0].date]
+    );
+
+    res.json({ success: true, message: 'Attendance reset successfully. Employee can now check in again.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};

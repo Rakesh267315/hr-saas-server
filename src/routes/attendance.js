@@ -16,5 +16,6 @@ router.post('/backfill',            authorize('admin', 'hr', 'super_admin'), ctr
 router.post('/bulk-entry',          authorize('admin', 'hr', 'super_admin'), ctrl.bulkEntry);
 router.patch('/:id/correct',        authorize('admin', 'hr', 'super_admin'), ctrl.correctAttendance);
 router.patch('/:id/unlock',         authorize('admin', 'hr', 'super_admin'), ctrl.unlockAttendance);
+router.delete('/:id/reset',         authorize('admin', 'hr', 'super_admin'), ctrl.resetAttendance);
 
 module.exports = router;
